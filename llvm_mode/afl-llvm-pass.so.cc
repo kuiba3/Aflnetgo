@@ -573,8 +573,10 @@ bool AFLCoverage::runOnModule(Module &M) {
               if (AFL_R(100) < dinst_ratio) {
                 std::map<std::string,int>::iterator it;
                 for (it = bb_to_dis.begin(); it != bb_to_dis.end(); ++it)
-                  if (it->first.compare(bb_name) == 0)
+                  if (it->first.compare(bb_name) == 0){
                     distance = it->second;
+					break;
+				  }
 
               }
             }
