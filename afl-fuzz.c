@@ -114,6 +114,16 @@ EXP_ST u64 mem_limit  = MEM_LIMIT;    /* Memory cap for child (MB)        */
 
 static u32 stats_update_freq = 1;     /* Stats update frequency (execs)   */
 
+//aflnet_go
+static u8 cooling_schedule = 0;      /* Cooling schedule for directed fuzzing */
+enum {
+  /* 00 */ SAN_EXP,                   /* Exponential schedule             */
+  /* 01 */ SAN_LOG,                   /* Logarithmical schedule           */
+  /* 02 */ SAN_LIN,                   /* Linear schedule                  */
+  /* 03 */ SAN_QUAD                   /* Quadratic schedule               */
+};
+//aflnet_go#
+
 EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            force_deterministic,       /* Force deterministic stages?      */
            use_splicing,              /* Recombine input files?           */
@@ -263,7 +273,11 @@ struct queue_entry {
 
   u8* trace_mini;                     /* Trace bytes, if kept             */
   u32 tc_ref;                         /* Trace bytes ref count            */
-
+  
+//aflnet_go
+  double distance;                    /* Distance to targets              */
+//aflnet_go#
+  
   struct queue_entry *next,           /* Next element, if any             */
                      *next_100;       /* 100 elements ahead               */
 
@@ -295,6 +309,13 @@ static u32 extras_cnt;                /* Total number of tokens read      */
 
 static struct extra_data* a_extras;   /* Automatically selected extras    */
 static u32 a_extras_cnt;              /* Total number of tokens available */
+
+//aflnet_go
+static double cur_distance = -1.0;     /* Distance of executed input       */
+static double max_distance = -1.0;     /* Maximal distance for any input   */
+static double min_distance = -1.0;     /* Minimal distance for any input   */
+static u32 t_x = 10;                  /* Time to exploitation (Default: 10 min) */
+//aflnet_go#
 
 static u8* (*post_handler)(u8* buf, u32* len);
 
@@ -390,7 +411,7 @@ u8 terminate_child = 0;
 u8 corpus_read_or_sync = 0;
 u8 state_aware_mode = 0;
 u8 region_level_mutation = 0;
-u8 state_selection_algo = ROUND_ROBIN, seed_selection_algo = RANDOM_SELECTION;
+u8 state_selection_algo = ROUND_ROBIN, seed_selection_algo = DIRECTED;
 u8 false_negative_reduction = 0;
 
 /* Implemented state machine */
@@ -1589,6 +1610,20 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
   q->generating_state_id = target_state_id;
   q->is_initial_seed = 0;
   q->unique_state_count = 0;
+  
+//aflnet_go
+  q->distance = cur_distance;
+  if (cur_distance > 0) {
+
+    if (max_distance <= 0) {
+      max_distance = cur_distance;
+      min_distance = cur_distance;
+    }
+    if (cur_distance > max_distance) max_distance = cur_distance;
+    if (cur_distance < min_distance) min_distance = cur_distance;
+
+  }  
+//aflnet_go#
 
   if (q->depth > max_depth) max_depth = q->depth;
 
@@ -1734,6 +1769,17 @@ static inline u8 has_new_bits(u8* virgin_map) {
   u64* virgin  = (u64*)virgin_map;
 
   u32  i = (MAP_SIZE >> 3);
+  
+//aflnet_go
+/* Calculate distance of current input to targets */
+  u64* total_distance = (u64*) (trace_bits + MAP_SIZE);
+  u64* total_count = (u64*) (trace_bits + MAP_SIZE + 8);
+
+  if (*total_count > 0)
+    cur_distance = (double) (*total_distance) / (double) (*total_count);
+  else
+    cur_distance = -1.0;
+//aflnet_go#
 
 #else
 
@@ -1741,6 +1787,17 @@ static inline u8 has_new_bits(u8* virgin_map) {
   u32* virgin  = (u32*)virgin_map;
 
   u32  i = (MAP_SIZE >> 2);
+  
+//aflnet_go
+  /* Calculate distance of current input to targets */
+  u32* total_distance = (u32*)(trace_bits + MAP_SIZE);
+  u32* total_count = (u32*)(trace_bits + MAP_SIZE + 4);
+
+  if (*total_count > 0) {
+    cur_distance = (double) (*total_distance) / (double) (*total_count);
+  else
+    cur_distance = -1.0;
+//aflnet_go#
 
 #endif /* ^WORD_SIZE_64 */
 
@@ -2207,7 +2264,10 @@ EXP_ST void setup_shm(void) {
   memset(virgin_tmout, 255, MAP_SIZE);
   memset(virgin_crash, 255, MAP_SIZE);
 
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+//aflnet_go
+//  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 16, IPC_CREAT | IPC_EXCL | 0600);
+//aflnet_go#
 
   if (shm_id < 0) PFATAL("shmget() failed");
 
@@ -3162,7 +3222,11 @@ static u8 run_target(char** argv, u32 timeout) {
      must prevent any earlier operations from venturing into that
      territory. */
 
-  memset(trace_bits, 0, MAP_SIZE);
+//aflnet_go
+//  memset(trace_bits, 0, MAP_SIZE);
+  memset(trace_bits, 0, MAP_SIZE + 16);
+//aflnet_go#  
+
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
@@ -3442,6 +3506,30 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
     }
 
     cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+	
+//aflnet_go
+
+    /* This is relevant when test cases are added w/out save_if_interesting */
+
+    if (q->distance <= 0) {
+
+      /* This calculates cur_distance */
+      has_new_bits(virgin_bits);
+
+      q->distance = cur_distance;
+      if (cur_distance > 0) {
+
+        if (max_distance <= 0) {
+          max_distance = cur_distance;
+          min_distance = cur_distance;
+        }
+        if (cur_distance > max_distance) max_distance = cur_distance;
+        if (cur_distance < min_distance) min_distance = cur_distance;
+
+      }
+
+    }
+//aflnet_go#
 
     if (q->exec_cksum != cksum) {
 
@@ -4004,9 +4092,14 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     }
 
 #ifndef SIMPLE_FILES
-
-    fn = alloc_printf("%s/queue/id:%06u,%s", out_dir, queued_paths,
+//aflnet_go
+//    fn = alloc_printf("%s/queue/id:%06u,%s", out_dir, queued_paths,
+//                      describe_op(hnb));
+	
+	fn = alloc_printf("%s/queue/id:%06u,%llu,%s", out_dir, queued_paths,
+                      get_cur_time() - start_time,
                       describe_op(hnb));
+//aflnet_go#
 
 #else
 
@@ -4099,8 +4192,13 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #ifndef SIMPLE_FILES
 
-      fn = alloc_printf("%s/replayable-hangs/id:%06llu,%s", out_dir,
-                        unique_hangs, describe_op(0));
+//aflnet_go
+//      fn = alloc_printf("%s/replayable-hangs/id:%06llu,%s", out_dir,
+//                        unique_hangs, describe_op(0));
+      fn = alloc_printf("%s/hangs/id:%06llu,%llu,%s", out_dir,
+                        unique_hangs, get_cur_time() - start_time,
+                        describe_op(0));			
+//aflnet_go#
 
 #else
 
@@ -4143,8 +4241,14 @@ keep_as_crash:
 
 #ifndef SIMPLE_FILES
 
-      fn = alloc_printf("%s/replayable-crashes/id:%06llu,sig:%02u,%s", out_dir,
-                        unique_crashes, kill_signal, describe_op(0));
+//aflnet_go
+//      fn = alloc_printf("%s/replayable-crashes/id:%06llu,sig:%02u,%s", out_dir,
+//                        unique_crashes, kill_signal, describe_op(0));
+						
+      fn = alloc_printf("%s/crashes/id:%06llu,%llu,sig:%02u,%s", out_dir,
+                        unique_crashes, get_cur_time() - start_time,
+                        kill_signal, describe_op(0));
+//aflnet_go#
 
 #else
 
@@ -5625,9 +5729,70 @@ static u32 calculate_score(struct queue_entry* q) {
 
   }
 
+//aflnet_go
+  u64 cur_ms = get_cur_time();
+  u64 t = (cur_ms - start_time) / 1000;
+  double progress_to_tx = ((double) t) / ((double) t_x * 60.0);
+
+  double T;
+
+  //TODO Substitute functions of exp and log with faster bitwise operations on integers
+  switch (cooling_schedule) {
+    case SAN_EXP:
+
+      T = 1.0 / pow(20.0, progress_to_tx);
+
+      break;
+
+    case SAN_LOG:
+
+      // alpha = 2 and exp(19/2) - 1 = 13358.7268297
+      T = 1.0 / (1.0 + 2.0 * log(1.0 + progress_to_tx * 13358.7268297));
+
+      break;
+
+    case SAN_LIN:
+
+      T = 1.0 / (1.0 + 19.0 * progress_to_tx);
+
+      break;
+
+    case SAN_QUAD:
+
+      T = 1.0 / (1.0 + 19.0 * pow(progress_to_tx, 2));
+
+      break;
+
+    default:
+      PFATAL ("Unkown Power Schedule for Directed Fuzzing");
+  }
+
+  double power_factor = 1.0;
+  if (q->distance > 0) {
+
+    double normalized_d = 0; // when "max_distance == min_distance", we set the normalized_d to 0 so that we can sufficiently explore those testcases whose distance >= 0.
+    if (max_distance != min_distance)
+      normalized_d = (q->distance - min_distance) / (max_distance - min_distance);
+
+    if (normalized_d >= 0) {
+
+        double p = (1.0 - normalized_d) * (1.0 - T) + 0.5 * T;
+        power_factor = pow(2.0, 2.0 * (double) log2(MAX_FACTOR) * (p - 0.5));
+
+    }// else WARNF ("Normalized distance negative: %f", normalized_d);
+
+  }
+
+  perf_score *= power_factor;
+  
+//aflnet_go#
+
   /* Make sure that we don't go over limit. */
 
   if (perf_score > HAVOC_MAX_MULT * 100) perf_score = HAVOC_MAX_MULT * 100;
+  
+  /* AFLGO-DEBUGGING */
+  // fprintf(stderr, "[Time %llu] q->distance: %4lf, max_distance: %4lf min_distance: %4lf, T: %4.3lf, power_factor: %4.3lf, adjusted perf_score: %4d\n", t, q->distance, max_distance, min_distance, T, power_factor, perf_score);
 
   return perf_score;
 
@@ -8080,6 +8245,15 @@ static void usage(u8* argv0) {
        "  -i dir        - input directory with test cases\n"
        "  -o dir        - output directory for fuzzer findings\n\n"
 
+//aflnet_go
+       "Directed fuzzing specific settings:\n\n"
+
+       "  -z schedule   - temperature-based power schedules\n"
+       "                  {exp, log, lin, quad} (Default: exp)\n"
+       "  -c min        - time from start when SA enters exploitation\n"
+       "                  in secs (s), mins (m), hrs (h), or days (d)\n\n"
+//aflnet_go#
+
        "Execution control settings:\n\n"
 
        "  -f file       - location read by the fuzzed program (stdin)\n"
@@ -8810,6 +8984,17 @@ static int check_ep_capability(cap_value_t cap, const char *filename) {
 
 #ifndef AFL_LIB
 
+//aflnet_go
+int stricmp(char const *a, char const *b) {
+  int d;
+  for (;; a++, b++) {
+    d = tolower(*a) - tolower(*b);
+    if (d != 0 || !*a)
+      return d;
+  }
+}
+//aflnet_go#
+
 /* Main entry point */
 
 int main(int argc, char** argv) {
@@ -8825,15 +9010,17 @@ int main(int argc, char** argv) {
   struct timeval tv;
   struct timezone tz;
 
-  SAYF(cCYA "afl-fuzz " cBRI VERSION cRST " by <lcamtuf@google.com>\n");
+  SAYF(cCYA "aflnet_go " cBRI VERSION cRST " by <tangxiaofeng>\n");
 
   doc_path = access(DOC_PATH, F_OK) ? "docs" : DOC_PATH;
 
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
-
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QN:D:W:w:e:P:KEq:s:RFc:l:")) > 0)
-
+//aflnet_go
+//  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QN:D:W:w:e:P:KEq:s:RFc:l:")) > 0)
+//  param b is AFLGO's c
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Qz:b:N:D:W:w:e:P:KEq:s:RFc:l:")) > 0)
+//aflnet_go#
     switch (opt) {
 
       case 'i': /* input dir */
@@ -8999,6 +9186,45 @@ int main(int argc, char** argv) {
         if (!mem_limit_given) mem_limit = MEM_LIMIT_QEMU;
 
         break;
+		
+//aflnet_go
+      case 'z': /* Cooling schedule for Directed Fuzzing */
+
+        if (!stricmp(optarg, "exp"))
+          cooling_schedule = SAN_EXP;
+        else if (!stricmp(optarg, "log"))
+          cooling_schedule = SAN_LOG;
+        else if (!stricmp(optarg, "lin"))
+          cooling_schedule = SAN_LIN;
+        else if (!stricmp(optarg, "quad"))
+          cooling_schedule = SAN_QUAD;
+        else
+          PFATAL ("Unknown value for option -z");
+
+        break;
+
+      case 'b': { /* cut-off time for cooling schedule */
+
+          u8 suffix = 'm';
+
+          if (sscanf(optarg, "%u%c", &t_x, &suffix) < 1 ||
+              optarg[0] == '-') FATAL("Bad syntax used for -c");
+
+          switch (suffix) {
+
+            case 's': t_x /= 60; break;
+            case 'm': break;
+            case 'h': t_x *= 60; break;
+            case 'd': t_x *= 60 * 24; break;
+
+            default:  FATAL("Unsupported suffix or bad syntax for -c");
+
+          }
+
+        }
+
+        break;
+//aflnet_go#
 
       case 'N': /* Network configuration */
         if (use_net) FATAL("Multiple -N options not supported");
@@ -9128,6 +9354,17 @@ int main(int argc, char** argv) {
     }
 
   if (optind == argc || !in_dir || !out_dir) usage(argv[0]);
+  
+//aflnet_go
+  OKF("Running with " cBRI "%s" cRST " schedule and time-to-exploitation set to " cBRI "%d minutes" cRST,
+      cooling_schedule == SAN_EXP ? "EXP" :
+      cooling_schedule == SAN_LOG ? "LOG" :
+      cooling_schedule == SAN_LIN ? "LIN" :
+      cooling_schedule == SAN_QUAD ? "QUAD" : "???",
+      t_x
+  );
+
+//aflnet_go#
 
   //AFLNet - Check for required arguments
   if (!use_net) FATAL("Please specify network information of the server under test (e.g., tcp://127.0.0.1/8554)");

@@ -178,7 +178,12 @@ static void setup_shm(void) {
 
   u8* shm_str;
 
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+//aflnet_go
+//  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+  
+  // Allocate 16 more bytes (used by afl-fuzz distances)
+  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 16, IPC_CREAT | IPC_EXCL | 0600);
+//aflnet_go#
 
   if (shm_id < 0) PFATAL("shmget() failed");
 

@@ -361,4 +361,8 @@
 
 // #define IGNORE_FINDS
 
+//aflnet_go
+#define MAX_FACTOR 32
+//aflnet_go#
+
 #endif /* ! _HAVE_CONFIG_H */

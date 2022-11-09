@@ -109,8 +109,12 @@ static void __tokencap_dump(const u8* ptr, size_t len, u8 is_text) {
   u32 i;
   u32 pos = 0;
 
-  if (len < MIN_AUTO_EXTRA || len > MAX_AUTO_EXTRA || !__tokencap_out_file)
-    return;
+//aflnet_go
+//  if (len < MIN_AUTO_EXTRA || len > MAX_AUTO_EXTRA || !__tokencap_out_file)
+//    return;
+  if (len < MIN_AUTO_EXTRA || len > MAX_AUTO_EXTRA) return;
+
+//aflnet_go#
 
   for (i = 0; i < len; i++) {
 
