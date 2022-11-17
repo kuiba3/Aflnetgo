@@ -8250,7 +8250,7 @@ static void usage(u8* argv0) {
 
        "  -z schedule   - temperature-based power schedules\n"
        "                  {exp, log, lin, quad} (Default: exp)\n"
-       "  -c min        - time from start when SA enters exploitation\n"
+       "  -b min        - time from start when SA enters exploitation\n"
        "                  in secs (s), mins (m), hrs (h), or days (d)\n\n"
 //aflnet_go#
 
@@ -9208,7 +9208,7 @@ int main(int argc, char** argv) {
           u8 suffix = 'm';
 
           if (sscanf(optarg, "%u%c", &t_x, &suffix) < 1 ||
-              optarg[0] == '-') FATAL("Bad syntax used for -c");
+              optarg[0] == '-') FATAL("Bad syntax used for -b");
 
           switch (suffix) {
 
@@ -9217,7 +9217,7 @@ int main(int argc, char** argv) {
             case 'h': t_x *= 60; break;
             case 'd': t_x *= 60 * 24; break;
 
-            default:  FATAL("Unsupported suffix or bad syntax for -c");
+            default:  FATAL("Unsupported suffix or bad syntax for -b");
 
           }
 

@@ -79,18 +79,21 @@ using namespace llvm;
 cl::opt<std::string> DistanceFile(
     "distance",
     cl::desc("Distance file containing the distance of each basic block to the provided targets."),
-    cl::value_desc("filename")
+    cl::value_desc("filename"),
+	cl::ZeroOrMore
 );
 
 cl::opt<std::string> TargetsFile(
     "targets",
     cl::desc("Input file containing the target lines of code."),
-    cl::value_desc("targets"));
+    cl::value_desc("targets"),
+	cl::ZeroOrMore);
 
 cl::opt<std::string> OutDirectory(
     "outdir",
     cl::desc("Output directory where Ftargets.txt, Fnames.txt, and BBnames.txt are generated."),
-    cl::value_desc("outdir"));
+    cl::value_desc("outdir"),
+	cl::ZeroOrMore);
 
 namespace llvm {
 
