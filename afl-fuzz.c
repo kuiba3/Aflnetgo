@@ -244,7 +244,7 @@ static s32 cpu_core_count;            /* CPU core count                   */
 
 #ifdef HAVE_AFFINITY
 
-static s32 cpu_aff = -1;       	      /* Selected CPU core                */
+static s32 cpu_aff = -1;               /* Selected CPU core                */
 
 #endif /* HAVE_AFFINITY */
 
@@ -315,6 +315,22 @@ static double cur_distance = -1.0;     /* Distance of executed input       */
 static double max_distance = -1.0;     /* Maximal distance for any input   */
 static double min_distance = -1.0;     /* Minimal distance for any input   */
 static u32 t_x = 10;                  /* Time to exploitation (Default: 10 min) */
+
+#define INF 4294967295
+
+static double max_state_distance = -1.0;
+static double min_state_distance = -1.0;
+
+typedef struct state_edge{
+  u32 state_id;
+  double dd_edge;            //Distance of edges
+  struct state_edge* next;  
+} state_edge;
+
+u32 *state_targets = NULL;
+u32 state_targets_count = 0;
+
+static u64 get_cur_time(void);
 //aflnet_go#
 
 static u8* (*post_handler)(u8* buf, u32* len);
@@ -399,7 +415,7 @@ char **was_fuzzed_map = NULL; /* A 2D array keeping state-specific was_fuzzed in
 u32 fuzzed_map_states = 0;
 u32 fuzzed_map_qentries = 0;
 u32 max_seed_region_count = 0;
-u32 local_port;		/* TCP/UDP port number to use as source */
+u32 local_port;    /* TCP/UDP port number to use as source */
 
 /* flags */
 u8 use_net = 0;
@@ -631,6 +647,50 @@ u32 update_scores_and_select_next_state(u8 mode) {
   u32 *state_scores = NULL;
   state_scores = (u32 *)ck_alloc(state_ids_count * sizeof(u32));
   if (!state_scores) PFATAL("Cannot allocate memory for state_scores");
+  
+  //aflnet_go
+  u64 cur_ms = get_cur_time();
+  u64 t = (cur_ms - start_time) / 1000;
+  double progress_to_tx = ((double) t) / ((double) t_x * 60.0);
+  
+  double T;
+
+  //TODO Substitute functions of exp and log with faster bitwise operations on integers
+  switch (cooling_schedule) {
+    case SAN_EXP:
+
+      T = 1.0 / pow(20.0, progress_to_tx);
+
+      break;
+
+    case SAN_LOG:
+
+      // alpha = 2 and exp(19/2) - 1 = 13358.7268297
+      T = 1.0 / (1.0 + 2.0 * log(1.0 + progress_to_tx * 13358.7268297));
+
+      break;
+
+    case SAN_LIN:
+
+      T = 1.0 / (1.0 + 19.0 * progress_to_tx);
+
+      break;
+
+    case SAN_QUAD:
+
+      T = 1.0 / (1.0 + 19.0 * pow(progress_to_tx, 2));
+
+      break;
+
+    default:
+      PFATAL ("Unkown Power Schedule for Directed Fuzzing");
+  }
+
+  double power_factor = 1.0;
+  
+  //aflnet_go#
+  
+  
 
   khint_t k;
   state_info_t *state;
@@ -643,9 +703,27 @@ u32 update_scores_and_select_next_state(u8 mode) {
       state = kh_val(khms_states, k);
       switch(mode) {
         case FAVOR:
-          state->score = ceil(1000 * pow(2, -log10(log10(state->fuzzs + 1) * state->selected_times + 1)) * pow(2, log(state->paths_discovered + 1)));
-          break;
-        //other cases are reserved
+      state->score = ceil(1000 * pow(2, -log10(log10(state->fuzzs + 1) * state->selected_times + 1)) * pow(2, log(state->paths_discovered + 1)));
+      //aflnet_go
+      if (state_targets){
+        double normalized_ds = 0;
+        if (max_state_distance != min_state_distance)
+          normalized_ds = (state->distance_to_target_state- min_state_distance) / (max_state_distance - min_state_distance);
+        
+        //当normalized_ds>1，说明此状态不可达，修改normalized_ds为1从而给予一个较低的power_factor
+        if (normalized_ds > 1)
+          normalized_ds = 1;
+        
+        if (normalized_ds >= 0 ) {
+          double p = (1.0 - normalized_ds) * (1.0 - T) + 0.5 * T;
+          power_factor = pow(2.0, 2.0 * (double) log2(MAX_FACTOR) * (p - 0.5));
+        }        
+      }
+      state->score = state->score * power_factor;
+      //aflnet_go#
+            
+      break;
+      //other cases are reserved
       }
 
       if (i == 0) {
@@ -778,6 +856,9 @@ struct queue_entry *choose_seed(u32 target_state_id, u8 mode)
   return result;
 }
 
+
+
+
 /* Update state-aware variables */
 void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
 {
@@ -785,6 +866,8 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
   int discard, i;
   state_info_t *state;
   unsigned int state_count;
+  
+  int has_new_edge = 0;
 
   if (!response_buf_size || !response_bytes) return;
 
@@ -813,9 +896,9 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
         //Check if the prevStateID and curStateID have been added to the state machine as vertices
         //Check also if the edge prevStateID->curStateID has been added
         Agnode_t *from, *to;
-		    Agedge_t *edge;
-		    from = agnode(ipsm, fromState, FALSE);
-		    if (!from) {
+        Agedge_t *edge;
+        from = agnode(ipsm, fromState, FALSE);
+        if (!from) {
           //Add a node to the graph
           from = agnode(ipsm, fromState, TRUE);
           if (dry_run) agset(from,"color","blue");
@@ -833,6 +916,10 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
           newState_From->selected_seed_index = 0;
           newState_From->seeds = NULL;
           newState_From->seeds_count = 0;
+      
+          // aflnet_go
+          newState_From->distance_to_target_state = INF;
+          // aflnet_go#
 
           k = kh_put(hms, khms_states, prevStateID, &discard);
           kh_value(khms_states, k) = newState_From;
@@ -844,8 +931,8 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
           if (prevStateID != 0) expand_was_fuzzed_map(1, 0);
         }
 
-		    to = agnode(ipsm, toState, FALSE);
-		    if (!to) {
+        to = agnode(ipsm, toState, FALSE);
+        if (!to) {
           //Add a node to the graph
           to = agnode(ipsm, toState, TRUE);
           if (dry_run) agset(to,"color","blue");
@@ -863,6 +950,10 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
           newState_To->selected_seed_index = 0;
           newState_To->seeds = NULL;
           newState_To->seeds_count = 0;
+      
+          // aflnet_go
+      newState_To->distance_to_target_state = INF;
+          // aflnet_go#
 
           k = kh_put(hms, khms_states, curStateID, &discard);
           kh_value(khms_states, k) = newState_To;
@@ -875,13 +966,17 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
         }
 
         //Check if an edge from->to exists
-		    edge = agedge(ipsm, from, to, NULL, FALSE);
-		    if (!edge) {
+        edge = agedge(ipsm, from, to, NULL, FALSE);
+        if (!edge) {
           //Add an edge to the graph
-			    edge = agedge(ipsm, from, to, "new_edge", TRUE);
+          edge = agedge(ipsm, from, to, "new_edge", TRUE);
           if (dry_run) agset(edge, "color", "blue");
           else agset(edge, "color", "red");
-		    }
+      
+          // aflnet_go
+          has_new_edge = 1;
+          // aflnet_go#
+        }
 
         //Update prevStateID
         prevStateID = curStateID;
@@ -902,6 +997,156 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
       ck_free(tmp);
     }
   }
+  
+  // aflnet_go
+  // Recalculate the distance when new edges are generated
+  if (has_new_edge && state_targets){
+    // Generate state diagram
+    state_edge *state_edge_nodes = (state_edge *) ck_alloc (state_ids_count * sizeof(state_edge));
+    for (i=0; i<state_ids_count; i++){
+      state_edge_nodes[i].state_id = state_ids[i];
+      state_edge_nodes[i].dd_edge = INF;
+      state_edge_nodes[i].next = NULL;
+      
+      for (int j=0;j < state_ids_count; j++){
+        char fromState[STATE_STR_LEN], toState[STATE_STR_LEN];
+        snprintf(fromState, STATE_STR_LEN, "%d", state_ids[j]);
+        snprintf(toState, STATE_STR_LEN, "%d", state_ids[i]);
+        Agnode_t *from, *to;
+        Agedge_t *edge;
+          from = agnode(ipsm, fromState, FALSE);
+        to = agnode(ipsm, toState, FALSE);
+        if (from && to){
+          edge = agedge(ipsm, from, to, NULL, FALSE);
+          if (edge){
+            state_edge *state_next = (state_edge *) ck_alloc (sizeof(state_edge));
+            state_next->state_id = state_ids[j];
+            
+            // Temporarily set the edge distance to 1
+            state_next->dd_edge = 1;
+            state_next->next = state_edge_nodes[i].next;
+            state_edge_nodes[i].next = state_next;
+          }
+        }
+          
+      }
+      
+    }
+   
+    max_state_distance = -1.0;
+    min_state_distance = -1.0;
+  
+    //记录状态可以到达目标点的个数
+    u32 Reachable_target_num[state_ids_count];
+    memset(Reachable_target_num,0,sizeof(Reachable_target_num));
+    
+    //在计算距离前初始化为INF,为了后面计算调和平均数的方便，这里先设为1/INF
+    for (int i=0;i<state_ids_count;i++){
+      k = kh_get(hms, khms_states, state_ids[i]);
+      kh_val(khms_states, k)->distance_to_target_state = 1/INF;
+      Reachable_target_num[i]++;
+    }
+  
+  
+  
+    // 对每个目标分别使用dijkstra算法计算距离，然后使用对每个状态的距离表示为
+    //     可达目标点个数/(1/抵达目标1距离+1/抵达目标1距离+......)
+    
+    for (i = 0;i < state_targets_count;i++){
+      double dis[state_ids_count];
+      
+      //表示当前要计算的目标的距离的目标
+      u32 cur_state_target = state_targets[i];
+      
+      //book作为标记数组，0为当前节点没有被选择，1为已经被选择，全部初始化为0
+      int book[state_ids_count];
+      memset(book, 0, sizeof(book));
+      
+      //min_index为未标记的节点中距离目标最近的节点索引，初始时如果目标节点已在状态转化图那么min_index为目标节点的索引
+      //如果当前目标不在状态转化图中，就跳过当前目标
+      int min_index = -1;
+      for (int j=0;j<state_ids_count; j++){
+        if (state_ids[j] == cur_state_target){
+          dis[j] = 0;
+          min_index = j;
+        }
+        else
+          dis[j] = INF;
+      }
+      if (min_index == -1) continue;
+    
+    
+    
+    
+      //使用dijkstra算法计算各个状态节点到目标点的距离，并保存在dis数组中
+      for (int j=0; j<state_ids_count;j++){
+        u32 min_num = INF;
+        
+        for(int k=0;k<state_ids_count;k++){
+          if(min_num > dis[k] && book[k] == 0){
+            min_num = dis[k];
+            min_index = k;
+          }
+          
+        }
+        // 如果没有新的未标记状态点可以抵达目标，提前退出for循环
+        if (min_num == INF) break;
+        
+        //标记索引为min_index的状态为1，表示已经被选择过
+        book[min_index] = 1;
+        
+        state_edge *state_temp = state_edge_nodes[min_index].next;
+        while(state_temp){
+          int index_temp = -1;
+          for(int k=0;k<state_ids_count;k++)
+            if (state_ids[k] == state_temp->state_id){
+              index_temp = k;
+              break;
+            }
+          if (dis[index_temp] == INF)
+            dis[index_temp] = state_temp->dd_edge;
+          else if(dis[index_temp] > dis[min_index] + state_temp->dd_edge)
+            dis[index_temp] = dis[min_index] + state_temp->dd_edge;
+          
+          state_temp = state_temp->next;
+        }
+        
+        
+      }
+      
+      
+      //对目标的距离取调和平均数，对每个状态的距离以及可达目标点个数分别计算
+      //最后用 可达目标点个数/(1/距离目标1的距离 + 1/距离目标2的距离 + ...)来表示每个状态节点到目标的平均距离
+      //调和平均距离保存在状态结构的distance_to_target_state变量中
+      
+      // Calculate the harmonic distance to the target state
+      for (int j=0;j<state_ids_count;j++){
+        k = kh_get(hms, khms_states, state_ids[j]);
+        if (k != kh_end(khms_states)) {
+          if (dis[j] != INF){
+            kh_val(khms_states, k)->distance_to_target_state += 1/(dis[j] + 1);
+            Reachable_target_num[j]++;
+          }
+          
+          //在最后一个目标的距离倒数相加后，计算出实际调和距离
+          // Update final distance
+          if(i==state_targets_count-1){
+            kh_val(khms_states, k)->distance_to_target_state = Reachable_target_num[j]/kh_val(khms_states, k)->distance_to_target_state;
+            if (max_state_distance < 0){
+              max_state_distance = kh_val(khms_states, k)->distance_to_target_state;
+              min_state_distance = kh_val(khms_states, k)->distance_to_target_state;
+            }
+            if (max_state_distance < kh_val(khms_states, k)->distance_to_target_state) max_state_distance = kh_val(khms_states, k)->distance_to_target_state;
+            if (min_state_distance > kh_val(khms_states, k)->distance_to_target_state) min_state_distance = kh_val(khms_states, k)->distance_to_target_state;
+          }
+        }
+        
+      }
+      
+    }
+  
+  }
+  //aflnet_go#
 
   //Update others no matter the new seed leads to interesting state sequence or not
 
@@ -956,6 +1201,10 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
         newState->seeds = (void **) ck_realloc (newState->seeds, sizeof(void *));
         newState->seeds[0] = (void *)q;
         newState->seeds_count = 1;
+    
+        // aflnet_go
+        newState->distance_to_target_state = INF;
+        // aflnet_go#
 
         k = kh_put(hms, khms_states, reachable_state_id, &discard);
         kh_value(khms_states, k) = newState;
@@ -3506,7 +3755,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
     }
 
     cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
-	
+  
 //aflnet_go
 
     /* This is relevant when test cases are added w/out save_if_interesting */
@@ -4095,8 +4344,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 //aflnet_go
 //    fn = alloc_printf("%s/queue/id:%06u,%s", out_dir, queued_paths,
 //                      describe_op(hnb));
-	
-	fn = alloc_printf("%s/queue/id:%06u,%llu,%s", out_dir, queued_paths,
+  
+  fn = alloc_printf("%s/queue/id:%06u,%llu,%s", out_dir, queued_paths,
                       get_cur_time() - start_time,
                       describe_op(hnb));
 //aflnet_go#
@@ -4197,7 +4446,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 //                        unique_hangs, describe_op(0));
       fn = alloc_printf("%s/hangs/id:%06llu,%llu,%s", out_dir,
                         unique_hangs, get_cur_time() - start_time,
-                        describe_op(0));			
+                        describe_op(0));      
 //aflnet_go#
 
 #else
@@ -4244,7 +4493,7 @@ keep_as_crash:
 //aflnet_go
 //      fn = alloc_printf("%s/replayable-crashes/id:%06llu,sig:%02u,%s", out_dir,
 //                        unique_crashes, kill_signal, describe_op(0));
-						
+            
       fn = alloc_printf("%s/crashes/id:%06llu,%llu,sig:%02u,%s", out_dir,
                         unique_crashes, get_cur_time() - start_time,
                         kill_signal, describe_op(0));
@@ -9186,7 +9435,7 @@ int main(int argc, char** argv) {
         if (!mem_limit_given) mem_limit = MEM_LIMIT_QEMU;
 
         break;
-		
+    
 //aflnet_go
       case 'z': /* Cooling schedule for Directed Fuzzing */
 
@@ -9344,7 +9593,7 @@ int main(int argc, char** argv) {
 
         if (local_port) FATAL("Multiple -l options not supported");
         local_port = atoi(optarg);
-	      if (local_port < 1024 || local_port > 65535) FATAL("Invalid source port number");
+        if (local_port < 1024 || local_port > 65535) FATAL("Invalid source port number");
         break;
 
       default:
