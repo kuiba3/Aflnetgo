@@ -9242,6 +9242,34 @@ int stricmp(char const *a, char const *b) {
       return d;
   }
 }
+
+u32 str_to_u32(char *str){
+  u32 num = 0;
+  for(int i=0; str[i]!='\n'; i++){
+    num = num*10 + str[i]-'0';
+  }
+  return num;
+}
+
+void init_state_target(){
+  u8* dir=getenv("TMP_DIR");
+  u8 filename[200];
+  char txt[50];
+  sprintf(filename, "%s/state_targets.txt",dir);
+  FILE *fp = fopen(filename,"r");
+  if(fp){
+    while(fgets(txt,50,fp)!=NULL){
+      state_targets = (u32 *) ck_realloc(state_targets, (state_targets_count + 1) * sizeof(u32));
+      state_targets[state_targets_count++] = str_to_u32(txt);
+    }
+    fclose(fp);
+  }
+  else
+    SAYF(cCYA "Open state_targets.txt failed \n");
+  
+}
+
+
 //aflnet_go#
 
 /* Main entry point */
@@ -9612,6 +9640,9 @@ int main(int argc, char** argv) {
       cooling_schedule == SAN_QUAD ? "QUAD" : "???",
       t_x
   );
+  
+  //从 TMP_DIR/state_targets.txt中获取目标所在状态，并保存在state_targets中
+  init_state_target();
 
 //aflnet_go#
 
