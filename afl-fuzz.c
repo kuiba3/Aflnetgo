@@ -427,7 +427,7 @@ u8 terminate_child = 0;
 u8 corpus_read_or_sync = 0;
 u8 state_aware_mode = 0;
 u8 region_level_mutation = 0;
-u8 state_selection_algo = ROUND_ROBIN, seed_selection_algo = FAVOR;
+u8 state_selection_algo = FAVOR, seed_selection_algo = FAVOR;
 u8 false_negative_reduction = 0;
 
 /* Implemented state machine */
@@ -695,12 +695,22 @@ u32 update_scores_and_select_next_state(u8 mode) {
   khint_t k;
   state_info_t *state;
   //Update the states' score
+  
+  //******************* debug ***************************//
+  fprintf(stderr,"in update_scores_and_select_next_state");
+  //******************* #debug ***************************//
+  
   for(i = 0; i < state_ids_count; i++) {
     u32 state_id = state_ids[i];
 
     k = kh_get(hms, khms_states, state_id);
     if (k != kh_end(khms_states)) {
       state = kh_val(khms_states, k);
+      // **************** debug *******************************//
+      fprintf(stderr, "state->id: %llu, state->distance_to_target_state: %4lf\n", state->id, state->distance_to_target_state);
+
+      // *************** #debug *******************************//
+      
       switch(mode) {
         case FAVOR:
       state->score = ceil(1000 * pow(2, -log10(log10(state->fuzzs + 1) * state->selected_times + 1)) * pow(2, log(state->paths_discovered + 1)));
@@ -717,6 +727,10 @@ u32 update_scores_and_select_next_state(u8 mode) {
         if (normalized_ds >= 0 ) {
           double p = (1.0 - normalized_ds) * (1.0 - T) + 0.5 * T;
           power_factor = pow(2.0, 2.0 * (double) log2(MAX_FACTOR) * (p - 0.5));
+          
+          // **************** debug *******************************//
+          fprintf(stderr, "state->id: %llu, T: %4.3lf, power_factor: %4lf\n", state->id, T, state->distance_to_target_state);
+          // *************** #debug *******************************//
         }        
       }
       state->score = state->score * power_factor;
@@ -758,6 +772,11 @@ unsigned int choose_target_state(u8 mode) {
       break;
     case FAVOR:
       /* Do ROUND_ROBIN for a few cycles to get enough statistical information*/
+      
+      //******************* debug ***************************//
+      fprintf(stderr,"in choose_target_state,state_cycles:%llu\n\n",state_cycles);
+      //******************* #debug ***************************//
+      
       if (state_cycles < 5) {
         result = state_ids[selected_state_index];
         selected_state_index++;
@@ -1014,7 +1033,7 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
         snprintf(toState, STATE_STR_LEN, "%d", state_ids[i]);
         Agnode_t *from, *to;
         Agedge_t *edge;
-          from = agnode(ipsm, fromState, FALSE);
+        from = agnode(ipsm, fromState, FALSE);
         to = agnode(ipsm, toState, FALSE);
         if (from && to){
           edge = agedge(ipsm, from, to, NULL, FALSE);
