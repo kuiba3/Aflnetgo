@@ -62,6 +62,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Analysis/CFGPrinter.h"
 
+
 #if defined(LLVM34)
 #include "llvm/DebugInfo.h"
 #else
@@ -238,6 +239,18 @@ bool AFLCoverage::runOnModule(Module &M) {
 
   } else if (!DistanceFile.empty()) {
 	//第二次编译阶段
+    
+    // 把目标存进targets中
+    char* dir=getenv("TMP_DIR");
+    char targetfilename[200];
+    sprintf(targetfilename, "%s/BBtargets.txt",dir);
+    std::ifstream targetsfile(targetfilename);
+    std::string line;
+    while (std::getline(targetsfile, line))
+      targets.push_back(line);
+    targetsfile.close();
+   
+  
     std::ifstream cf(DistanceFile);
     if (cf.is_open()) {
 
@@ -518,9 +531,12 @@ bool AFLCoverage::runOnModule(Module &M) {
 #ifdef __x86_64__
     IntegerType *LargestType = Int64Ty;
     ConstantInt *MapCntLoc = ConstantInt::get(LargestType, MAP_SIZE + 8);
+    ConstantInt *MapTargetPathLoc = ConstantInt::get(LargestType, MAP_SIZE + 16);
+    
 #else
     IntegerType *LargestType = Int32Ty;
     ConstantInt *MapCntLoc = ConstantInt::get(LargestType, MAP_SIZE + 4);
+    ConstantInt *MapTargetPathLoc = ConstantInt::get(LargestType, MAP_SIZE + 8);
 #endif
     ConstantInt *MapDistLoc = ConstantInt::get(LargestType, MAP_SIZE);
     ConstantInt *One = ConstantInt::get(LargestType, 1);
@@ -535,7 +551,9 @@ bool AFLCoverage::runOnModule(Module &M) {
     GlobalVariable *AFLPrevLoc = new GlobalVariable(
         M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_prev_loc",
         0, GlobalVariable::GeneralDynamicTLSModel, 0, false);
-
+        
+    
+    
     for (auto &F : M) {
 
       int distance = -1;
@@ -543,6 +561,9 @@ bool AFLCoverage::runOnModule(Module &M) {
       for (auto &BB : F) {
 
         distance = -1;
+        
+        BasicBlock::iterator IP = BB.getFirstInsertionPt();
+        IRBuilder<> IRB(&(*IP));
 
         if (is_aflnetgo) {
 
@@ -557,6 +578,35 @@ bool AFLCoverage::runOnModule(Module &M) {
             std::size_t found = filename.find_last_of("/\\");
             if (found != std::string::npos)
               filename = filename.substr(found + 1);
+            
+            // 对基本块和目标基本块进行比较，如果相同，进行插桩
+            for (auto &target : targets) {
+              std::size_t found = target.find_last_of("/\\");
+              if (found != std::string::npos)
+                target = target.substr(found + 1);
+
+              std::size_t pos = target.find_last_of(":");
+              std::string target_file = target.substr(0, pos);
+              unsigned int target_line = atoi(target.substr(pos + 1).c_str());
+
+              // 插桩
+              if (!target_file.compare(filename) && target_line == line){
+                LoadInst *MapPtr = IRB.CreateLoad(AFLMapPtr);
+                MapPtr->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+                
+                Value *MapTargetPathPtr = IRB.CreateBitCast(
+                    IRB.CreateGEP(MapPtr, MapTargetPathLoc), LargestType->getPointerTo());
+                LoadInst *MapTargetPath = IRB.CreateLoad(MapTargetPathPtr);
+                MapTargetPath->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+
+                Value *IncrTargetPath = IRB.CreateAdd(MapTargetPath, One);
+                IRB.CreateStore(IncrTargetPath, MapTargetPathPtr)
+                    ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+                               
+              }
+                       
+            }
+            
 
             bb_name = filename + ":" + std::to_string(line);
             break;
@@ -586,9 +636,8 @@ bool AFLCoverage::runOnModule(Module &M) {
           }
         }
 
-        BasicBlock::iterator IP = BB.getFirstInsertionPt();
-        IRBuilder<> IRB(&(*IP));
-
+        
+        
         if (AFL_R(100) >= inst_ratio) continue;
 
         /* Make up cur_loc */

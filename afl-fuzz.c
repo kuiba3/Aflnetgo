@@ -697,7 +697,7 @@ u32 update_scores_and_select_next_state(u8 mode) {
   //Update the states' score
   
   //******************* debug ***************************//
-  fprintf(stderr,"in update_scores_and_select_next_state");
+  fprintf(stderr,"in update_scores_and_select_next_state\n");
   //******************* #debug ***************************//
   
   for(i = 0; i < state_ids_count; i++) {
@@ -729,7 +729,7 @@ u32 update_scores_and_select_next_state(u8 mode) {
           power_factor = pow(2.0, 2.0 * (double) log2(MAX_FACTOR) * (p - 0.5));
           
           // **************** debug *******************************//
-          fprintf(stderr, "state->id: %llu, T: %4.3lf, power_factor: %4lf\n", state->id, T, state->distance_to_target_state);
+          fprintf(stderr, "state->id: %llu, T: %4.3lf, power_factor: %4lf\n", state->id, T, power_factor);
           // *************** #debug *******************************//
         }        
       }
@@ -774,7 +774,7 @@ unsigned int choose_target_state(u8 mode) {
       /* Do ROUND_ROBIN for a few cycles to get enough statistical information*/
       
       //******************* debug ***************************//
-      fprintf(stderr,"in choose_target_state,state_cycles:%llu\n\n",state_cycles);
+      fprintf(stderr,"\nin choose_target_state,state_cycles:%llu\n",state_cycles);
       //******************* #debug ***************************//
       
       if (state_cycles < 5) {
@@ -1356,9 +1356,54 @@ int send_over_network()
   kliter_t(lms) *it;
   messages_sent = 0;
 
+  // 获取运行到目标代码的标记地址
+#ifdef WORD_SIZE_64
+  u64* target_path = (u64*) (trace_bits + MAP_SIZE + 16);
+#else
+  u32* target_path = (u32*)(trace_bits + MAP_SIZE + 8);
+#endif
+
+
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
     n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
     messages_sent++;
+    
+    //判断共享内存中运行到目标代码的标记是否不为0，不为0则把上一个状态作为目标状态加入队列
+    if(*target_path > 0){
+      unsigned int state_count;
+      unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
+      int has_new_targetstate = 0;
+      if(state_count>0){
+        has_new_targetstate = 1;
+        if(state_targets_count > 0){
+          for(int i=0; i<state_count; i++){
+            if(state_sequence[state_count-1] == state_targets[i])
+              has_new_targetstate = 0;
+          }
+        }
+      }
+      
+      if(has_new_targetstate){
+        state_targets[state_targets_count++] = state_sequence[state_count-1];
+        
+        // 保存新的目标状态至state_targets.txt文件中
+        u8* dir=getenv("TMP_DIR");
+        u8 filename[200];
+        char txt[50];
+        sprintf(filename, "%s/state_targets.txt",dir);
+        FILE *fp = fopen(filename,"a+");
+        if(fp){
+          fprintf(fp,"%d",state_targets[state_targets_count-1]);
+          fclose(fp);
+        }
+      }
+      
+      *target_path = 0;
+    }
+    
+    
+    
+    
 
     //Allocate memory to store new accumulated response buffer size
     response_bytes = (u32 *) ck_realloc(response_bytes, messages_sent * sizeof(u32));
@@ -2534,7 +2579,7 @@ EXP_ST void setup_shm(void) {
 
 //aflnet_go
 //  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 16, IPC_CREAT | IPC_EXCL | 0600);
+  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 24, IPC_CREAT | IPC_EXCL | 0600);
 //aflnet_go#
 
   if (shm_id < 0) PFATAL("shmget() failed");
@@ -3492,7 +3537,7 @@ static u8 run_target(char** argv, u32 timeout) {
 
 //aflnet_go
 //  memset(trace_bits, 0, MAP_SIZE);
-  memset(trace_bits, 0, MAP_SIZE + 16);
+  memset(trace_bits, 0, MAP_SIZE + 24);
 //aflnet_go#  
 
   MEM_BARRIER();
