@@ -1042,7 +1042,7 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
             state_next->state_id = state_ids[j];
             
             // Temporarily set the edge distance to 1
-            state_next->dd_edge = 1;
+            state_next->dd_edge = 10;
             state_next->next = state_edge_nodes[i].next;
             state_edge_nodes[i].next = state_next;
           }
@@ -1063,7 +1063,7 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
     for (int i=0;i<state_ids_count;i++){
       k = kh_get(hms, khms_states, state_ids[i]);
       kh_val(khms_states, k)->distance_to_target_state = 1/INF;
-      Reachable_target_num[i]++;
+      //Reachable_target_num[i]++;
     }
   
   
@@ -1150,7 +1150,7 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
           //在最后一个目标的距离倒数相加后，计算出实际调和距离
           // Update final distance
           if(i==state_targets_count-1){
-            kh_val(khms_states, k)->distance_to_target_state = Reachable_target_num[j]/kh_val(khms_states, k)->distance_to_target_state;
+            kh_val(khms_states, k)->distance_to_target_state = 1.0/kh_val(khms_states, k)->distance_to_target_state * Reachable_target_num[j];
             if (max_state_distance < 0){
               max_state_distance = kh_val(khms_states, k)->distance_to_target_state;
               min_state_distance = kh_val(khms_states, k)->distance_to_target_state;
