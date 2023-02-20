@@ -971,7 +971,7 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
           newState_To->seeds_count = 0;
       
           // aflnet_go
-      newState_To->distance_to_target_state = INF;
+          newState_To->distance_to_target_state = INF;
           // aflnet_go#
 
           k = kh_put(hms, khms_states, curStateID, &discard);
@@ -1150,7 +1150,14 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
           //在最后一个目标的距离倒数相加后，计算出实际调和距离
           // Update final distance
           if(i==state_targets_count-1){
-            kh_val(khms_states, k)->distance_to_target_state = 1.0/kh_val(khms_states, k)->distance_to_target_state * Reachable_target_num[j];
+            if(Reachable_target_num[j] == 0)
+              kh_val(khms_states, k)->distance_to_target_state = INF;
+            else
+              kh_val(khms_states, k)->distance_to_target_state = 1.0/(kh_val(khms_states, k)->distance_to_target_state * Reachable_target_num[j]);
+            
+            //******************* debug ***************************//
+            fprintf(stderr,"\nReachable_target_num[j]:%lu , distance_to_target_state: %4lf\n",Reachable_target_num[j], kh_val(khms_states, k)->distance_to_target_state);
+            //******************* #debug ***************************//
             if (max_state_distance < 0){
               max_state_distance = kh_val(khms_states, k)->distance_to_target_state;
               min_state_distance = kh_val(khms_states, k)->distance_to_target_state;
@@ -1376,14 +1383,15 @@ int send_over_network()
       if(state_count>0){
         has_new_targetstate = 1;
         if(state_targets_count > 0){
-          for(int i=0; i<state_count; i++){
-            if(state_sequence[state_count-1] == state_targets[i])
+          for(int i=0; i<state_targets_count; i++){
+            if(state_sequence[state_count-1] == state_targets[i] || state_sequence[state_count-1] == 0)
               has_new_targetstate = 0;
           }
         }
       }
       
       if(has_new_targetstate){
+        state_targets = (u32 *) ck_realloc(state_targets, (state_targets_count + 1) * sizeof(u32));
         state_targets[state_targets_count++] = state_sequence[state_count-1];
         
         // 保存新的目标状态至state_targets.txt文件中
@@ -1393,7 +1401,7 @@ int send_over_network()
         sprintf(filename, "%s/state_targets.txt",dir);
         FILE *fp = fopen(filename,"a+");
         if(fp){
-          fprintf(fp,"%d",state_targets[state_targets_count-1]);
+          fprintf(fp,"%d\n",state_targets[state_targets_count-1]);
           fclose(fp);
         }
       }
@@ -9321,10 +9329,14 @@ void init_state_target(){
   char txt[50];
   sprintf(filename, "%s/state_targets.txt",dir);
   FILE *fp = fopen(filename,"r");
+  u32 state = 0;
   if(fp){
     while(fgets(txt,50,fp)!=NULL){
-      state_targets = (u32 *) ck_realloc(state_targets, (state_targets_count + 1) * sizeof(u32));
-      state_targets[state_targets_count++] = str_to_u32(txt);
+      state = str_to_u32(txt);
+      if(state != 0){
+        state_targets = (u32 *) ck_realloc(state_targets, (state_targets_count + 1) * sizeof(u32));
+        state_targets[state_targets_count++] = state;
+      }
     }
     fclose(fp);
   }
