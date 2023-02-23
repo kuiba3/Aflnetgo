@@ -774,7 +774,7 @@ unsigned int choose_target_state(u8 mode) {
       /* Do ROUND_ROBIN for a few cycles to get enough statistical information*/
       
       //******************* debug ***************************//
-      fprintf(stderr,"\nin choose_target_state,state_cycles:%llu\n",state_cycles);
+      fprintf(stderr,"\ntime:%llu, in choose_target_state,state_cycles:%llu\n",get_cur()_time-start_time,state_cycles);
       //******************* #debug ***************************//
       
       if (state_cycles < 5) {
@@ -1407,6 +1407,8 @@ int send_over_network()
       }
       
       *target_path = 0;
+      //Free state sequence
+      if (state_sequence) ck_free(state_sequence);
     }
     
     
