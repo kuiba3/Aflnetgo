@@ -57,6 +57,8 @@ KHASH_SET_INIT_INT(hs32)
 // Initialize a hash table with int key and value is of type state_info_t
 KHASH_INIT(hms, khint32_t, state_info_t *, 1, kh_int_hash_func, kh_int_hash_equal)
 
+KHASH_INIT(hedge, khint32_t, u64, 1, kh_int_hash_func, kh_int_hash_equal)
+
 // Functions for extracting requests and responses
 
 /*To add support for a new application protocol, please add corresponding function declartion and implementation

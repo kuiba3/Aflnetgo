@@ -321,14 +321,23 @@ static u32 t_x = 10;                  /* Time to exploitation (Default: 10 min) 
 static double max_state_distance = -1.0;
 static double min_state_distance = -1.0;
 
+// 逆邻接表的数据结构
 typedef struct state_edge{
   u32 state_id;
-  double dd_edge;            //Distance of edges
-  struct state_edge* next;  
+  u32 adjvex;
+  double dd_edge;            //存储此节点到邻接节点的距离
+  struct state_edge* next;   //指向下一个邻接点
 } state_edge;
+
+typedef struct state_node{
+  u32 state_id;
+  state_edge* edge;
+}state_node;
 
 u32 *state_targets = NULL;
 u32 state_targets_count = 0;
+
+u32 state_favor_count = 0;        //favor模式下的状态选择的次数
 
 static u64 get_cur_time(void);
 //aflnet_go#
@@ -439,6 +448,10 @@ klist_t(lms) *kl_messages;
 khash_t(hs32) *khs_ipsm_paths;
 khash_t(hms) *khms_states;
 
+// aflnet_go
+khash_t(hedge) *khedge;
+// aflnet_go#
+
 //M2_prev points to the last message of M1 (i.e., prefix)
 //If M1 is empty, M2_prev == NULL
 //M2_next points to the first message of M3 (i.e., suffix)
@@ -460,6 +473,10 @@ void setup_ipsm()
   khs_ipsm_paths = kh_init(hs32);
 
   khms_states = kh_init(hms);
+  
+  // aflnet_go
+  khedge = kh_init(hedge);
+  // aflnet_go#
 }
 
 /* Free memory allocated to state-machine variables */
@@ -638,6 +655,190 @@ u32 index_search(u32 *A, u32 n, u32 val) {
   return index;
 }
 
+// aflnet_go
+void update_state_distance(){
+  khiter_t k;
+  u64 max_count = 0;
+  for (k = kh_begin(khedge); k != kh_end(khedge); ++k)
+		if (kh_exist(khedge, k) && kh_value(khedge,k)>max_count)
+      max_count = kh_value(khedge,k);
+  
+  // 生成状态转化图的数据结构,其中顶点表示入度的点，边表示从其他点到顶点的边，为逆邻接表结构
+  state_node *state_nodes = (state_node *) ck_alloc (state_ids_count * sizeof(state_node));
+  unsigned int path_id = 0;
+  for (int i=0; i<state_ids_count; i++){
+    state_nodes[i].state_id = state_ids[i];
+    state_nodes[i].edge = NULL;
+    
+    for (int j=0;j < state_ids_count; j++){
+      char fromState[STATE_STR_LEN], toState[STATE_STR_LEN];
+      snprintf(fromState, STATE_STR_LEN, "%d", state_ids[j]);
+      snprintf(toState, STATE_STR_LEN, "%d", state_ids[i]);
+      Agnode_t *from, *to;
+      Agedge_t *edge;
+      from = agnode(ipsm, fromState, FALSE);
+      to = agnode(ipsm, toState, FALSE);
+      if (from && to){
+        edge = agedge(ipsm, from, to, NULL, FALSE);
+        if (edge){
+          state_edge *state_next = (state_edge *) ck_alloc (sizeof(state_edge));
+          state_next->state_id = state_ids[j];
+          state_next->adjvex = i;
+                    
+          // 使用最大执行次数的边除以此边的执行次数作为边的距离
+          path_id = (state_ids[j]<<4)^state_ids[i];
+          k = kh_get(hedge, khedge, path_id);
+          if (k == kh_end(khedge))
+            state_next->dd_edge = (double)INF;
+          else
+            state_next->dd_edge = (double)max_count/(double)kh_val(khedge,k);
+          
+          state_next->next = state_nodes[i].edge;
+          state_nodes[i].edge = state_next;
+        }
+      }
+        
+    }
+    
+  }
+ 
+  max_state_distance = -1.0;
+  min_state_distance = -1.0;
+
+  //记录状态可以到达目标点的个数
+  u32 Reachable_target_num[state_ids_count];
+  memset(Reachable_target_num,0,sizeof(Reachable_target_num));
+  
+  //在计算距离前初始化为INF,为了后面计算调和平均数的方便，这里先设为1/INF
+  for (int i=0;i<state_ids_count;i++){
+    k = kh_get(hms, khms_states, state_ids[i]);
+    kh_val(khms_states, k)->distance_to_target_state = 1/INF;
+    //Reachable_target_num[i]++;
+  }
+
+
+
+  // 对每个目标分别使用dijkstra算法计算距离，然后使用对每个状态的距离表示为
+  //     可达目标点个数/(1/抵达目标1距离+1/抵达目标1距离+......)
+  
+  for (int i = 0;i < state_targets_count;i++){
+    double dis[state_ids_count];
+    
+    //表示当前要计算的目标的距离的目标
+    u32 cur_state_target = state_targets[i];
+    
+    //book作为标记数组，0为当前节点没有被选择，1为已经被选择，全部初始化为0
+    int book[state_ids_count];
+    memset(book, 0, sizeof(book));
+    
+    //min_index为未标记的节点中距离目标最近的节点索引，初始时如果目标节点已在状态转化图那么min_index为目标节点的索引
+    //如果当前目标不在状态转化图中，就跳过当前目标
+    int min_index = -1;
+    for (int j=0;j<state_ids_count; j++){
+      if (state_ids[j] == cur_state_target){
+        dis[j] = 0;
+        min_index = j;
+      }
+      else
+        dis[j] = INF;
+    }
+    if (min_index == -1) continue;
+  
+  
+  
+    //使用dijkstra算法计算各个状态节点到目标点的距离，并保存在dis数组中
+    for (int j=0; j<state_ids_count;j++){
+      u32 min_num = INF;
+      
+      for(int k=0;k<state_ids_count;k++){
+        if(min_num > dis[k] && book[k] == 0){
+          min_num = dis[k];
+          min_index = k;
+        }
+        
+      }
+      // 如果没有新的未标记状态点可以抵达目标，提前退出for循环
+      if (min_num == INF) break;
+      
+      //标记索引为min_index的状态为1，表示已经被选择过
+      book[min_index] = 1;
+      
+      state_edge *state_temp = state_nodes[min_index].edge;
+      while(state_temp){
+        int index_temp = -1;
+        for(int k=0;k<state_ids_count;k++)
+          if (state_ids[k] == state_temp->state_id){
+            index_temp = k;
+            break;
+          }
+        if (dis[index_temp] == INF)
+          dis[index_temp] = state_temp->dd_edge;
+        else if(dis[index_temp] > dis[min_index] + state_temp->dd_edge)
+          dis[index_temp] = dis[min_index] + state_temp->dd_edge;
+        
+        state_temp = state_temp->next;
+      }
+      
+      
+    }
+    
+    
+    //对目标的距离取调和平均数，对每个状态的距离以及可达目标点个数分别计算
+    //最后用 可达目标点个数/(1/距离目标1的距离 + 1/距离目标2的距离 + ...)来表示每个状态节点到目标的平均距离
+    //调和平均距离保存在状态结构的distance_to_target_state变量中
+    
+    // Calculate the harmonic distance to the target state
+    for (int j=0;j<state_ids_count;j++){
+      k = kh_get(hms, khms_states, state_ids[j]);
+      if (k != kh_end(khms_states)) {
+        if (dis[j] != INF){
+          kh_val(khms_states, k)->distance_to_target_state += 1/(dis[j] + 1);
+          Reachable_target_num[j]++;
+        }
+        
+        //在最后一个目标的距离倒数相加后，计算出实际调和距离
+        // Update final distance
+        if(i==state_targets_count-1){
+          if(Reachable_target_num[j] == 0)
+            kh_val(khms_states, k)->distance_to_target_state = INF;
+          else
+            kh_val(khms_states, k)->distance_to_target_state = 1000.0/(kh_val(khms_states, k)->distance_to_target_state * Reachable_target_num[j]);
+          
+          //******************* debug ***************************//
+          fprintf(stderr,"\nstate_Id: %d,Reachable_target_num:%lu , distance_to_target_state: %4lf\n", state_ids[j], Reachable_target_num[j], kh_val(khms_states, k)->distance_to_target_state);
+          //******************* #debug ***************************//
+          if (max_state_distance < 0){
+            if (kh_val(khms_states, k)->distance_to_target_state != INF)  max_state_distance = kh_val(khms_states, k)->distance_to_target_state;
+            min_state_distance = kh_val(khms_states, k)->distance_to_target_state;
+          }
+          if (max_state_distance < kh_val(khms_states, k)->distance_to_target_state && kh_val(khms_states, k)->distance_to_target_state != INF) max_state_distance = kh_val(khms_states, k)->distance_to_target_state;
+          if (min_state_distance > kh_val(khms_states, k)->distance_to_target_state) min_state_distance = kh_val(khms_states, k)->distance_to_target_state;
+        }
+      }
+      
+    }
+    
+  }
+  
+  // 释放生成的状态转化图的邻接表
+  state_edge *temp_edge = NULL;
+  for (int i=0; i<state_ids_count; i++){
+    
+    temp_edge = state_nodes[i].edge;
+    while(temp_edge){
+      state_nodes[i].edge = temp_edge->next;
+      ck_free(temp_edge);
+      temp_edge = state_nodes[i].edge;      
+    }
+
+  }
+  ck_free(state_nodes);
+  
+}
+
+// aflnet_go#
+
+
 /* Calculate state scores and select the next state */
 u32 update_scores_and_select_next_state(u8 mode) {
   u32 result = 0, i;
@@ -716,6 +917,13 @@ u32 update_scores_and_select_next_state(u8 mode) {
       state->score = ceil(1000 * pow(2, -log10(log10(state->fuzzs + 1) * state->selected_times + 1)) * pow(2, log(state->paths_discovered + 1)));
       //aflnet_go
       if (state_targets){
+        // 每fuzz 9个种子，更新一次状态距离
+        if (state_favor_count % 10 == 0){
+          update_state_distance();
+          state_favor_count++;
+        }
+        
+        
         double normalized_ds = 0;
         if (max_state_distance != min_state_distance)
           normalized_ds = (state->distance_to_target_state- min_state_distance) / (max_state_distance - min_state_distance);
@@ -751,6 +959,7 @@ u32 update_scores_and_select_next_state(u8 mode) {
   u32 randV = UR(state_scores[state_ids_count - 1]);
   u32 idx = index_search(state_scores, state_ids_count, randV);
   result = state_ids[idx];
+  state_favor_count++;
 
   if (state_scores) ck_free(state_scores);
   return result;
@@ -774,10 +983,10 @@ unsigned int choose_target_state(u8 mode) {
       /* Do ROUND_ROBIN for a few cycles to get enough statistical information*/
       
       //******************* debug ***************************//
-      fprintf(stderr,"\ntime:%llu, in choose_target_state,state_cycles:%llu\n",get_cur()_time-start_time,state_cycles);
+      fprintf(stderr,"\ntime:%llu, in choose_target_state,state_cycles:%llu\n",get_cur_time()-start_time,state_cycles);
       //******************* #debug ***************************//
       
-      if (state_cycles < 5) {
+      if (state_cycles < 1) {
         result = state_ids[selected_state_index];
         selected_state_index++;
         if (selected_state_index == state_ids_count) {
@@ -874,6 +1083,8 @@ struct queue_entry *choose_seed(u32 target_state_id, u8 mode)
 
   return result;
 }
+
+
 
 
 
@@ -1019,158 +1230,9 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
   
   // aflnet_go
   // Recalculate the distance when new edges are generated
+  // 加入判断条件，当有新的目标状态加入时，也要重新计算各个距离
   if (has_new_edge && state_targets){
-    // Generate state diagram
-    state_edge *state_edge_nodes = (state_edge *) ck_alloc (state_ids_count * sizeof(state_edge));
-    for (i=0; i<state_ids_count; i++){
-      state_edge_nodes[i].state_id = state_ids[i];
-      state_edge_nodes[i].dd_edge = INF;
-      state_edge_nodes[i].next = NULL;
-      
-      for (int j=0;j < state_ids_count; j++){
-        char fromState[STATE_STR_LEN], toState[STATE_STR_LEN];
-        snprintf(fromState, STATE_STR_LEN, "%d", state_ids[j]);
-        snprintf(toState, STATE_STR_LEN, "%d", state_ids[i]);
-        Agnode_t *from, *to;
-        Agedge_t *edge;
-        from = agnode(ipsm, fromState, FALSE);
-        to = agnode(ipsm, toState, FALSE);
-        if (from && to){
-          edge = agedge(ipsm, from, to, NULL, FALSE);
-          if (edge){
-            state_edge *state_next = (state_edge *) ck_alloc (sizeof(state_edge));
-            state_next->state_id = state_ids[j];
-            
-            // Temporarily set the edge distance to 1
-            state_next->dd_edge = 10;
-            state_next->next = state_edge_nodes[i].next;
-            state_edge_nodes[i].next = state_next;
-          }
-        }
-          
-      }
-      
-    }
-   
-    max_state_distance = -1.0;
-    min_state_distance = -1.0;
-  
-    //记录状态可以到达目标点的个数
-    u32 Reachable_target_num[state_ids_count];
-    memset(Reachable_target_num,0,sizeof(Reachable_target_num));
-    
-    //在计算距离前初始化为INF,为了后面计算调和平均数的方便，这里先设为1/INF
-    for (int i=0;i<state_ids_count;i++){
-      k = kh_get(hms, khms_states, state_ids[i]);
-      kh_val(khms_states, k)->distance_to_target_state = 1/INF;
-      //Reachable_target_num[i]++;
-    }
-  
-  
-  
-    // 对每个目标分别使用dijkstra算法计算距离，然后使用对每个状态的距离表示为
-    //     可达目标点个数/(1/抵达目标1距离+1/抵达目标1距离+......)
-    
-    for (i = 0;i < state_targets_count;i++){
-      double dis[state_ids_count];
-      
-      //表示当前要计算的目标的距离的目标
-      u32 cur_state_target = state_targets[i];
-      
-      //book作为标记数组，0为当前节点没有被选择，1为已经被选择，全部初始化为0
-      int book[state_ids_count];
-      memset(book, 0, sizeof(book));
-      
-      //min_index为未标记的节点中距离目标最近的节点索引，初始时如果目标节点已在状态转化图那么min_index为目标节点的索引
-      //如果当前目标不在状态转化图中，就跳过当前目标
-      int min_index = -1;
-      for (int j=0;j<state_ids_count; j++){
-        if (state_ids[j] == cur_state_target){
-          dis[j] = 0;
-          min_index = j;
-        }
-        else
-          dis[j] = INF;
-      }
-      if (min_index == -1) continue;
-    
-    
-    
-    
-      //使用dijkstra算法计算各个状态节点到目标点的距离，并保存在dis数组中
-      for (int j=0; j<state_ids_count;j++){
-        u32 min_num = INF;
-        
-        for(int k=0;k<state_ids_count;k++){
-          if(min_num > dis[k] && book[k] == 0){
-            min_num = dis[k];
-            min_index = k;
-          }
-          
-        }
-        // 如果没有新的未标记状态点可以抵达目标，提前退出for循环
-        if (min_num == INF) break;
-        
-        //标记索引为min_index的状态为1，表示已经被选择过
-        book[min_index] = 1;
-        
-        state_edge *state_temp = state_edge_nodes[min_index].next;
-        while(state_temp){
-          int index_temp = -1;
-          for(int k=0;k<state_ids_count;k++)
-            if (state_ids[k] == state_temp->state_id){
-              index_temp = k;
-              break;
-            }
-          if (dis[index_temp] == INF)
-            dis[index_temp] = state_temp->dd_edge;
-          else if(dis[index_temp] > dis[min_index] + state_temp->dd_edge)
-            dis[index_temp] = dis[min_index] + state_temp->dd_edge;
-          
-          state_temp = state_temp->next;
-        }
-        
-        
-      }
-      
-      
-      //对目标的距离取调和平均数，对每个状态的距离以及可达目标点个数分别计算
-      //最后用 可达目标点个数/(1/距离目标1的距离 + 1/距离目标2的距离 + ...)来表示每个状态节点到目标的平均距离
-      //调和平均距离保存在状态结构的distance_to_target_state变量中
-      
-      // Calculate the harmonic distance to the target state
-      for (int j=0;j<state_ids_count;j++){
-        k = kh_get(hms, khms_states, state_ids[j]);
-        if (k != kh_end(khms_states)) {
-          if (dis[j] != INF){
-            kh_val(khms_states, k)->distance_to_target_state += 1/(dis[j] + 1);
-            Reachable_target_num[j]++;
-          }
-          
-          //在最后一个目标的距离倒数相加后，计算出实际调和距离
-          // Update final distance
-          if(i==state_targets_count-1){
-            if(Reachable_target_num[j] == 0)
-              kh_val(khms_states, k)->distance_to_target_state = INF;
-            else
-              kh_val(khms_states, k)->distance_to_target_state = 1.0/(kh_val(khms_states, k)->distance_to_target_state * Reachable_target_num[j]);
-            
-            //******************* debug ***************************//
-            fprintf(stderr,"\nReachable_target_num[j]:%lu , distance_to_target_state: %4lf\n",Reachable_target_num[j], kh_val(khms_states, k)->distance_to_target_state);
-            //******************* #debug ***************************//
-            if (max_state_distance < 0){
-              max_state_distance = kh_val(khms_states, k)->distance_to_target_state;
-              min_state_distance = kh_val(khms_states, k)->distance_to_target_state;
-            }
-            if (max_state_distance < kh_val(khms_states, k)->distance_to_target_state) max_state_distance = kh_val(khms_states, k)->distance_to_target_state;
-            if (min_state_distance > kh_val(khms_states, k)->distance_to_target_state) min_state_distance = kh_val(khms_states, k)->distance_to_target_state;
-          }
-        }
-        
-      }
-      
-    }
-  
+    update_state_distance();
   }
   //aflnet_go#
 
@@ -1279,6 +1341,17 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
   if (state_sequence) ck_free(state_sequence);
 }
 
+// aflnet_go
+// 获取路径的id，算法为节点a和b：a->b的id为(a<<4) xor b
+unsigned int *get_path_ids(unsigned int *state_sequence, unsigned int state_count){
+  unsigned int *path_ids =  ck_alloc (sizeof(unsigned int *) * (state_count-1));
+  for(int i = state_count-1; i>0; i--){
+    path_ids[i-1] = ((state_sequence[i-1])<<4)^(state_sequence[i]);
+  }
+  return path_ids;
+}
+
+
 /* Send (mutated) messages in order to the server under test */
 int send_over_network()
 {
@@ -1380,7 +1453,8 @@ int send_over_network()
       unsigned int state_count;
       unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
       int has_new_targetstate = 0;
-      if(state_count>0){
+      // 取state_count>1是因为返回初始状态为0，所以有新的状态的话，状态序列数量至少为2
+      if(state_count>1){
         has_new_targetstate = 1;
         if(state_targets_count > 0){
           for(int i=0; i<state_targets_count; i++){
@@ -1393,6 +1467,9 @@ int send_over_network()
       if(has_new_targetstate){
         state_targets = (u32 *) ck_realloc(state_targets, (state_targets_count + 1) * sizeof(u32));
         state_targets[state_targets_count++] = state_sequence[state_count-1];
+        
+        // 更新状态到目标状态的距离
+        update_state_distance();
         
         // 保存新的目标状态至state_targets.txt文件中
         u8* dir=getenv("TMP_DIR");
@@ -1463,6 +1540,39 @@ HANDLE_RESPONSES:
     int status = kill(child_pid, 0);
     if ((status != 0) && (errno == ESRCH)) break;
   }
+  
+  
+  // aflnet_go
+  // 记录状态转化边的数量
+  unsigned int state_count, path_count, discard;
+  unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
+  
+  // 状态数小于2,不存在状态转换边，直接退出
+  if(state_count < 2){
+    if (state_sequence) ck_free(state_sequence);
+    return 0;
+  }
+  
+  
+  unsigned int *path_ids = get_path_ids(state_sequence, state_count);
+  path_count = state_count-1;
+  
+  khiter_t k;
+  for (int i=0; i<path_count; i++){
+    k = kh_get(hedge, khedge, path_ids[i]);
+    if(k == kh_end(khedge)){
+      k = kh_put(hedge, khedge, path_ids[i], &discard);
+      kh_val(khedge, k) = 1;
+    }
+    else
+      kh_val(khedge, k)++;
+  }
+  
+  if (state_sequence) ck_free(state_sequence);
+  if (path_ids) ck_free(path_ids);
+  // aflnet_go#
+  
+  
 
   return 0;
 }
@@ -6115,7 +6225,7 @@ static u32 calculate_score(struct queue_entry* q) {
   if (perf_score > HAVOC_MAX_MULT * 100) perf_score = HAVOC_MAX_MULT * 100;
   
   /* AFLGO-DEBUGGING */
-  // fprintf(stderr, "[Time %llu] q->distance: %4lf, max_distance: %4lf min_distance: %4lf, T: %4.3lf, power_factor: %4.3lf, adjusted perf_score: %4d\n", t, q->distance, max_distance, min_distance, T, power_factor, perf_score);
+  fprintf(stderr, "[Time %llu] q->distance: %4lf, max_distance: %4lf min_distance: %4lf, T: %4.3lf, power_factor: %4.3lf, adjusted perf_score: %4d\n", t, q->distance, max_distance, min_distance, T, power_factor, perf_score);
 
   return perf_score;
 
