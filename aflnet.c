@@ -1802,7 +1802,7 @@ int parse_net_config(u8* net_config, u8* protocol, u8** ip_address, u32* port)
   return 0;
 }
 
-u8* state_sequence_to_string(unsigned int *stateSequence, unsigned int stateCount) {
+u8* state_sequence_to_string(u64 *stateSequence, unsigned int stateCount) {
   u32 i = 0;
 
   u8 *out = NULL;

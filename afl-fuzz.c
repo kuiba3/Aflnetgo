@@ -284,7 +284,7 @@ struct queue_entry {
   region_t *regions;                  /* Regions keeping information of message(s) sent to the server under test */
   u32 region_count;                   /* Total number of regions in this seed */
   u32 index;                          /* Index of this queue entry in the whole queue */
-  u32 generating_state_id;            /* ID of the start at which the new seed was generated */
+  u64 generating_state_id;            /* ID of the start at which the new seed was generated */
   u8 is_initial_seed;                 /* Is this an initial seed */
   u32 unique_state_count;             /* Unique number of states traversed by this queue entry */
 
@@ -323,18 +323,18 @@ static double min_state_distance = -1.0;
 
 // 逆邻接表的数据结构
 typedef struct state_edge{
-  u32 state_id;
+  u64 state_id;
   u32 adjvex;
   double dd_edge;            //存储此节点到邻接节点的距离
   struct state_edge* next;   //指向下一个邻接点
 } state_edge;
 
 typedef struct state_node{
-  u32 state_id;
+  u64 state_id;
   state_edge* edge;
 }state_node;
 
-u32 *state_targets = NULL;
+u64 *state_targets = NULL;
 u32 state_targets_count = 0;
 
 u32 state_favor_count = 0;        //favor模式下的状态选择的次数
@@ -410,9 +410,12 @@ int response_buf_size = 0; //the size of the whole response buffer
 u32 *response_bytes = NULL; //an array keeping accumulated response buffer size
                             //e.g., response_bytes[i] keeps the response buffer size
                             //once messages 0->i have been received and processed by the SUT
+u32 state_count = 0;        // 记录state_sequence中的数量
+u64 *state_sequence = NULL; // 记录了发送报文后的state队列，在清理response_buf时进行清理，主要是替换了aflnet中从报文中获取state队列的方式
+
 u32 max_annotated_regions = 0;
-u32 target_state_id = 0;
-u32 *state_ids = NULL;
+u64 target_state_id = 0;
+u64 *state_ids = NULL;
 u32 state_ids_count = 0;
 u32 selected_state_index = 0;
 u32 state_cycles = 0;
@@ -445,7 +448,7 @@ static FILE* ipsm_dot_file;
 
 /* Hash table/map and list */
 klist_t(lms) *kl_messages;
-khash_t(hs32) *khs_ipsm_paths;
+khash_t(hs64) *khs_ipsm_paths;
 khash_t(hms) *khms_states;
 
 // aflnet_go
@@ -470,7 +473,7 @@ void setup_ipsm()
   agattr(ipsm, AGNODE, "color", "black"); //Default node colr is black
   agattr(ipsm, AGEDGE, "color", "black"); //Default edge color is black
 
-  khs_ipsm_paths = kh_init(hs32);
+  khs_ipsm_paths = kh_init(hs64);
 
   khms_states = kh_init(hms);
   
@@ -479,12 +482,35 @@ void setup_ipsm()
   // aflnet_go#
 }
 
+// aflnet_go
+u64* extract_state_codes(u64 *state_sequence, unsigned int* state_count){
+  if(state_sequence == NULL && *state_count == 0){
+    (*state_count) = 1;
+    state_sequence = (u64 *)ck_realloc(state_sequence, (*state_count) * sizeof(u64));
+    state_sequence[0] = 0;
+  }
+  (*state_count)++;
+  state_sequence = (u64 *)ck_realloc(state_sequence, (*state_count) * sizeof(u64));
+  
+    // 获取运行到目标代码的标记地址
+#ifdef WORD_SIZE_64
+  u64* state_code = (u64*) (trace_bits + MAP_SIZE + 24);
+#else
+  u64* state_code = (u64*)(trace_bits + MAP_SIZE + 12);
+#endif
+  state_sequence[(*state_count) - 1] = *state_code;
+  return state_sequence;
+}
+
+// aflnet_go#
+
+
 /* Free memory allocated to state-machine variables */
 void destroy_ipsm()
 {
   agclose(ipsm);
 
-  kh_destroy(hs32, khs_ipsm_paths);
+  kh_destroy(hs64, khs_ipsm_paths);
 
   state_info_t *state;
   kh_foreach_value(khms_states, state, {ck_free(state->seeds); ck_free(state);});
@@ -494,7 +520,7 @@ void destroy_ipsm()
 }
 
 /* Get state index in the state IDs list, given a state ID */
-u32 get_state_index(u32 state_id) {
+u32 get_state_index(u64 state_id) {
   u32 index = 0;
   for (index = 0; index < state_ids_count; index++) {
     if (state_ids[index] == state_id) break;
@@ -522,50 +548,51 @@ void expand_was_fuzzed_map(u32 new_states, u32 new_qentries) {
 }
 
 /* Get unique state count, given a state sequence */
-u32 get_unique_state_count(unsigned int *state_sequence, unsigned int state_count) {
+u32 get_unique_state_count(u64 *state_sequence, unsigned int state_count) {
   //A hash set is used so that no state is counted twice
-  khash_t(hs32) *khs_state_ids;
-  khs_state_ids = kh_init(hs32);
+  khash_t(hs64) *khs_state_ids;
+  khs_state_ids = kh_init(hs64);
 
-  unsigned int discard, state_id, i;
+  unsigned int discard, i;
+  u64 state_id;
   u32 result = 0;
 
   for (i = 0; i < state_count; i++) {
     state_id = state_sequence[i];
 
-    if (kh_get(hs32, khs_state_ids, state_id) != kh_end(khs_state_ids)) {
+    if (kh_get(hs64, khs_state_ids, state_id) != kh_end(khs_state_ids)) {
       continue;
     } else {
-      kh_put(hs32, khs_state_ids, state_id, &discard);
+      kh_put(hs64, khs_state_ids, state_id, &discard);
       result++;
     }
   }
 
-  kh_destroy(hs32, khs_state_ids);
+  kh_destroy(hs64, khs_state_ids);
   return result;
 }
 
 /* Check if a state sequence is interesting (e.g., new state is discovered). Loop is taken into account */
-u8 is_state_sequence_interesting(unsigned int *state_sequence, unsigned int state_count) {
+u8 is_state_sequence_interesting(u64 *state_sequence, unsigned int state_count) {
   //limit the loop count to only 1
-  u32 *trimmed_state_sequence = NULL;
+  u64 *trimmed_state_sequence = NULL;
   u32 i, count = 0;
   for (i=0; i < state_count; i++) {
     if ((i >= 2) && (state_sequence[i] == state_sequence[i - 1]) && (state_sequence[i] == state_sequence[i - 2])) continue;
     count++;
-    trimmed_state_sequence = (u32 *)realloc(trimmed_state_sequence, count * sizeof(unsigned int));
+    trimmed_state_sequence = (u64 *)realloc(trimmed_state_sequence, count * sizeof(u64));
     trimmed_state_sequence[count - 1] = state_sequence[i];
   }
 
   //Calculate the hash based on the shortened state sequence
-  u32 hashKey = hash32(trimmed_state_sequence, count * sizeof(unsigned int), 0);
+  u64 hashKey = hash32(trimmed_state_sequence, count * sizeof(u64), 0);
   if (trimmed_state_sequence) free(trimmed_state_sequence);
 
-  if (kh_get(hs32, khs_ipsm_paths, hashKey) != kh_end(khs_ipsm_paths)) {
+  if (kh_get(hs64, khs_ipsm_paths, hashKey) != kh_end(khs_ipsm_paths)) {
     return 0;
   } else {
     int dummy;
-    kh_put(hs32, khs_ipsm_paths, hashKey, &dummy);
+    kh_put(hs64, khs_ipsm_paths, hashKey, &dummy);
     return 1;
   }
 }
@@ -574,16 +601,16 @@ u8 is_state_sequence_interesting(unsigned int *state_sequence, unsigned int stat
 void update_region_annotations(struct queue_entry* q)
 {
   u32 i = 0;
-
+  
   for (i = 0; i < messages_sent; i++) {
-    if ((response_bytes[i] == 0) || ( i > 0 && (response_bytes[i] - response_bytes[i - 1] == 0))) {
-      q->regions[i].state_sequence = NULL;
-      q->regions[i].state_count = 0;
-    } else {
-      unsigned int state_count;
-      q->regions[i].state_sequence = (*extract_response_codes)(response_buf, response_bytes[i], &state_count);
-      q->regions[i].state_count = state_count;
+    
+    // 从全局变量state_sequence中提取状态队列    
+    q->regions[i].state_sequence = (u64 *)ck_realloc(q->regions[i].state_sequence,  (i+2)* sizeof(u64));
+    for(u32 j=0; j<i+2; j++){
+      q->regions[i].state_sequence[j] = state_sequence[j];
     }
+    q->regions[i].state_count = i+2;
+    
   }
 }
 
@@ -621,29 +648,30 @@ u8* choose_source_region(u32 *out_len) {
 
 /* Update #fuzzs visiting a specific state */
 void update_fuzzs() {
-  unsigned int state_count, i, discard;
-  unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
+  unsigned int i, discard;
+  //unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
+  // 已经从共享内存中提取状态码到全局变量state_sequence
 
   //A hash set is used so that the #paths is not updated more than once for one specific state
-  khash_t(hs32) *khs_state_ids;
+  khash_t(hs64) *khs_state_ids;
   khint_t k;
-  khs_state_ids = kh_init(hs32);
+  khs_state_ids = kh_init(hs64);
 
   for(i = 0; i < state_count; i++) {
-    unsigned int state_id = state_sequence[i];
+    u64 state_id = state_sequence[i];
 
-    if (kh_get(hs32, khs_state_ids, state_id) != kh_end(khs_state_ids)) {
+    if (kh_get(hs64, khs_state_ids, state_id) != kh_end(khs_state_ids)) {
       continue;
     } else {
-      kh_put(hs32, khs_state_ids, state_id, &discard);
+      kh_put(hs64, khs_state_ids, state_id, &discard);
       k = kh_get(hms, khms_states, state_id);
       if (k != kh_end(khms_states)) {
         kh_val(khms_states, k)->fuzzs++;
       }
     }
   }
-  ck_free(state_sequence);
-  kh_destroy(hs32, khs_state_ids);
+  //ck_free(state_sequence);
+  kh_destroy(hs64, khs_state_ids);
 }
 
 /* Return the index of the "region" containing a given value */
@@ -665,15 +693,15 @@ void update_state_distance(){
   
   // 生成状态转化图的数据结构,其中顶点表示入度的点，边表示从其他点到顶点的边，为逆邻接表结构
   state_node *state_nodes = (state_node *) ck_alloc (state_ids_count * sizeof(state_node));
-  unsigned int path_id = 0;
+  u64 path_id = 0;
   for (int i=0; i<state_ids_count; i++){
     state_nodes[i].state_id = state_ids[i];
     state_nodes[i].edge = NULL;
     
     for (int j=0;j < state_ids_count; j++){
       char fromState[STATE_STR_LEN], toState[STATE_STR_LEN];
-      snprintf(fromState, STATE_STR_LEN, "%d", state_ids[j]);
-      snprintf(toState, STATE_STR_LEN, "%d", state_ids[i]);
+      snprintf(fromState, STATE_STR_LEN, "%llu", state_ids[j]);
+      snprintf(toState, STATE_STR_LEN, "%llu", state_ids[i]);
       Agnode_t *from, *to;
       Agedge_t *edge;
       from = agnode(ipsm, fromState, FALSE);
@@ -725,7 +753,7 @@ void update_state_distance(){
     double dis[state_ids_count];
     
     //表示当前要计算的目标的距离的目标
-    u32 cur_state_target = state_targets[i];
+    u64 cur_state_target = state_targets[i];
     
     //book作为标记数组，0为当前节点没有被选择，1为已经被选择，全部初始化为0
     int book[state_ids_count];
@@ -805,7 +833,7 @@ void update_state_distance(){
             kh_val(khms_states, k)->distance_to_target_state = 1000.0/(kh_val(khms_states, k)->distance_to_target_state * Reachable_target_num[j]);
           
           //******************* debug ***************************//
-          fprintf(stderr,"\nstate_Id: %d,Reachable_target_num:%lu , distance_to_target_state: %4lf\n", state_ids[j], Reachable_target_num[j], kh_val(khms_states, k)->distance_to_target_state);
+          fprintf(stderr,"\nstate_Id: %llu,Reachable_target_num:%u , distance_to_target_state: %4lf\n", state_ids[j], Reachable_target_num[j], kh_val(khms_states, k)->distance_to_target_state);
           //******************* #debug ***************************//
           if (max_state_distance < 0){
             if (kh_val(khms_states, k)->distance_to_target_state != INF)  max_state_distance = kh_val(khms_states, k)->distance_to_target_state;
@@ -902,7 +930,7 @@ u32 update_scores_and_select_next_state(u8 mode) {
   //******************* #debug ***************************//
   
   for(i = 0; i < state_ids_count; i++) {
-    u32 state_id = state_ids[i];
+    u64 state_id = state_ids[i];
 
     k = kh_get(hms, khms_states, state_id);
     if (k != kh_end(khms_states)) {
@@ -967,7 +995,7 @@ u32 update_scores_and_select_next_state(u8 mode) {
 
 /* Select a target state at which we do state-aware fuzzing */
 unsigned int choose_target_state(u8 mode) {
-  u32 result = 0;
+  u64 result = 0;
 
   switch (mode) {
     case RANDOM_SELECTION: //Random state selection
@@ -983,7 +1011,7 @@ unsigned int choose_target_state(u8 mode) {
       /* Do ROUND_ROBIN for a few cycles to get enough statistical information*/
       
       //******************* debug ***************************//
-      fprintf(stderr,"\ntime:%llu, in choose_target_state,state_cycles:%llu\n",get_cur_time()-start_time,state_cycles);
+      fprintf(stderr,"\ntime:%llu, in choose_target_state,state_cycles:%u\n",get_cur_time()-start_time,state_cycles);
       //******************* #debug ***************************//
       
       if (state_cycles < 1) {
@@ -1095,13 +1123,13 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
   khint_t k;
   int discard, i;
   state_info_t *state;
-  unsigned int state_count;
   
   int has_new_edge = 0;
 
   if (!response_buf_size || !response_bytes) return;
 
-  unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
+  //unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
+  // 已经从共享内存中提取状态码到全局变量state_sequence
 
   q->unique_state_count = get_unique_state_count(state_sequence, state_count);
 
@@ -1115,13 +1143,13 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
 
     //Update the IPSM graph
     if (state_count > 1) {
-      unsigned int prevStateID = state_sequence[0];
+      u64 prevStateID = state_sequence[0];
 
       for(i=1; i < state_count; i++) {
-        unsigned int curStateID = state_sequence[i];
+        u64 curStateID = state_sequence[i];
         char fromState[STATE_STR_LEN], toState[STATE_STR_LEN];
-        snprintf(fromState, STATE_STR_LEN, "%d", prevStateID);
-        snprintf(toState, STATE_STR_LEN, "%d", curStateID);
+        snprintf(fromState, STATE_STR_LEN, "%llu", prevStateID);
+        snprintf(toState, STATE_STR_LEN, "%llu", curStateID);
 
         //Check if the prevStateID and curStateID have been added to the state machine as vertices
         //Check also if the edge prevStateID->curStateID has been added
@@ -1155,7 +1183,7 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
           kh_value(khms_states, k) = newState_From;
 
           //Insert this into the state_ids array too
-          state_ids = (u32 *) ck_realloc(state_ids, (state_ids_count + 1) * sizeof(u32));
+          state_ids = (u64 *) ck_realloc(state_ids, (state_ids_count + 1) * sizeof(u64));
           state_ids[state_ids_count++] = prevStateID;
 
           if (prevStateID != 0) expand_was_fuzzed_map(1, 0);
@@ -1189,7 +1217,7 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
           kh_value(khms_states, k) = newState_To;
 
           //Insert this into the state_ids array too
-          state_ids = (u32 *) ck_realloc(state_ids, (state_ids_count + 1) * sizeof(u32));
+          state_ids = (u64 *) ck_realloc(state_ids, (state_ids_count + 1) * sizeof(u64));
           state_ids[state_ids_count++] = curStateID;
 
           if (curStateID != 0) expand_was_fuzzed_map(1, 0);
@@ -1298,7 +1326,7 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
         kh_value(khms_states, k) = newState;
 
         //Insert this into the state_ids array too
-        state_ids = (u32 *) ck_realloc(state_ids, (state_ids_count + 1) * sizeof(u32));
+        state_ids = (u64 *) ck_realloc(state_ids, (state_ids_count + 1) * sizeof(u64));
         state_ids[state_ids_count++] = reachable_state_id;
 
         if (reachable_state_id != 0) expand_was_fuzzed_map(1, 0);
@@ -1311,23 +1339,23 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
   //Update the number of paths which have traversed a specific state
   //It can be used for calculating fuzzing energy
   //A hash set is used so that the #paths is not updated more than once for one specific state
-  khash_t(hs32) *khs_state_ids;
-  khs_state_ids = kh_init(hs32);
+  khash_t(hs64) *khs_state_ids;
+  khs_state_ids = kh_init(hs64);
 
   for(i = 0; i < state_count; i++) {
-    unsigned int state_id = state_sequence[i];
+    u64 state_id = state_sequence[i];
 
-    if (kh_get(hs32, khs_state_ids, state_id) != kh_end(khs_state_ids)) {
+    if (kh_get(hs64, khs_state_ids, state_id) != kh_end(khs_state_ids)) {
       continue;
     } else {
-      kh_put(hs32, khs_state_ids, state_id, &discard);
+      kh_put(hs64, khs_state_ids, state_id, &discard);
       k = kh_get(hms, khms_states, state_id);
       if (k != kh_end(khms_states)) {
         kh_val(khms_states, k)->paths++;
       }
     }
   }
-  kh_destroy(hs32, khs_state_ids);
+  kh_destroy(hs64, khs_state_ids);
 
   //Update paths_discovered
   if (!dry_run) {
@@ -1338,13 +1366,14 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
   }
 
   //Free state sequence
-  if (state_sequence) ck_free(state_sequence);
+  // 改为全局变量了，所以不释放
+  //if (state_sequence) ck_free(state_sequence);
 }
 
 // aflnet_go
 // 获取路径的id，算法为节点a和b：a->b的id为(a<<4) xor b
-unsigned int *get_path_ids(unsigned int *state_sequence, unsigned int state_count){
-  unsigned int *path_ids =  ck_alloc (sizeof(unsigned int *) * (state_count-1));
+u64 *get_path_ids(u64 *state_sequence, unsigned int state_count){
+  u64 *path_ids =  ck_alloc (sizeof(unsigned int *) * (state_count-1));
   for(int i = state_count-1; i>0; i--){
     path_ids[i-1] = ((state_sequence[i-1])<<4)^(state_sequence[i]);
   }
@@ -1376,6 +1405,13 @@ int send_over_network()
   if (response_bytes) {
     ck_free(response_bytes);
     response_bytes = NULL;
+  }
+  
+  // 在清理response_buf时进行清理全局变量state_sequence和state_count
+  if (state_sequence) {
+    ck_free(state_sequence);
+    state_sequence = NULL;
+    state_count = 0;
   }
 
   //Create a TCP/UDP socket
@@ -1443,55 +1479,11 @@ int send_over_network()
   u32* target_path = (u32*)(trace_bits + MAP_SIZE + 8);
 #endif
 
-
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
     n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
     messages_sent++;
     
-    //判断共享内存中运行到目标代码的标记是否不为0，不为0则把上一个状态作为目标状态加入队列
-    if(*target_path > 0){
-      unsigned int state_count;
-      unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
-      int has_new_targetstate = 0;
-      // 取state_count>1是因为返回初始状态为0，所以有新的状态的话，状态序列数量至少为2
-      if(state_count>1){
-        has_new_targetstate = 1;
-        if(state_targets_count > 0){
-          for(int i=0; i<state_targets_count; i++){
-            if(state_sequence[state_count-1] == state_targets[i] || state_sequence[state_count-1] == 0)
-              has_new_targetstate = 0;
-          }
-        }
-      }
-      
-      if(has_new_targetstate){
-        state_targets = (u32 *) ck_realloc(state_targets, (state_targets_count + 1) * sizeof(u32));
-        state_targets[state_targets_count++] = state_sequence[state_count-1];
-        
-        // 更新状态到目标状态的距离
-        update_state_distance();
-        
-        // 保存新的目标状态至state_targets.txt文件中
-        u8* dir=getenv("TMP_DIR");
-        u8 filename[200];
-        char txt[50];
-        sprintf(filename, "%s/state_targets.txt",dir);
-        FILE *fp = fopen(filename,"a+");
-        if(fp){
-          fprintf(fp,"%d\n",state_targets[state_targets_count-1]);
-          fclose(fp);
-        }
-      }
-      
-      *target_path = 0;
-      //Free state sequence
-      if (state_sequence) ck_free(state_sequence);
-    }
     
-    
-    
-    
-
     //Allocate memory to store new accumulated response buffer size
     response_bytes = (u32 *) ck_realloc(response_bytes, messages_sent * sizeof(u32));
 
@@ -1505,6 +1497,9 @@ int send_over_network()
     if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
       goto HANDLE_RESPONSES;
     }
+    
+    // 从共享内存中提取状态码到全局变量state_sequence，state_count
+    state_sequence = extract_state_codes(state_sequence, &state_count);
 
     //Update accumulated response buffer size
     response_bytes[messages_sent - 1] = response_buf_size;
@@ -1513,6 +1508,48 @@ int send_over_network()
     //it could be a signal of a potentiall server crash, like the case of CVE-2019-7314
     if (prev_buf_size == response_buf_size) likely_buggy = 1;
     else likely_buggy = 0;
+    
+    //判断共享内存中运行到目标代码的标记是否不为0，不为0则把上一个状态作为目标状态加入队列
+    if(*target_path > 0){
+      //unsigned int state_count;
+      //unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);      
+      
+      int has_new_targetstate = 0;
+      // 取state_count>1是因为返回初始状态为0，所以有新的状态的话，状态序列数量至少为2
+      if(state_count>1){
+        has_new_targetstate = 1;
+        if(state_targets_count > 0){
+          for(int i=0; i<state_targets_count; i++){
+            if(state_sequence[state_count-1] == state_targets[i] || state_sequence[state_count-1] == 0)
+              has_new_targetstate = 0;
+          }
+        }
+      }
+      
+      if(has_new_targetstate){
+        state_targets = (u64 *) ck_realloc(state_targets, (state_targets_count + 1) * sizeof(u64));
+        state_targets[state_targets_count++] = state_sequence[state_count-1];
+        
+        // 更新状态到目标状态的距离
+        update_state_distance();
+        
+        // 保存新的目标状态至state_targets.txt文件中
+        u8* dir=getenv("TMP_DIR");
+        u8 filename[200];
+        sprintf(filename, "%s/state_targets.txt",dir);
+        FILE *fp = fopen(filename,"a+");
+        if(fp){
+          fprintf(fp,"%llu\n",state_targets[state_targets_count-1]);
+          fclose(fp);
+        }
+      }
+      
+      *target_path = 0;
+      //Free state sequence
+      // 改为全局变量了，所以不释放
+      //if (state_sequence) ck_free(state_sequence);
+    }
+    
   }
 
 HANDLE_RESPONSES:
@@ -1544,17 +1581,20 @@ HANDLE_RESPONSES:
   
   // aflnet_go
   // 记录状态转化边的数量
-  unsigned int state_count, path_count, discard;
-  unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
+  unsigned int  path_count, discard;
+  //unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
+  // 从共享内存中提取状态码
+  state_sequence = extract_state_codes(state_sequence, &state_count);
   
   // 状态数小于2,不存在状态转换边，直接退出
   if(state_count < 2){
-    if (state_sequence) ck_free(state_sequence);
+    // 改为全局变量了，所以不释放
+    //if (state_sequence) ck_free(state_sequence);
     return 0;
   }
   
   
-  unsigned int *path_ids = get_path_ids(state_sequence, state_count);
+  u64 *path_ids = get_path_ids(state_sequence, state_count);
   path_count = state_count-1;
   
   khiter_t k;
@@ -1568,7 +1608,8 @@ HANDLE_RESPONSES:
       kh_val(khedge, k)++;
   }
   
-  if (state_sequence) ck_free(state_sequence);
+  // 改为全局变量了，所以不释放
+  //if (state_sequence) ck_free(state_sequence);
   if (path_ids) ck_free(path_ids);
   // aflnet_go#
   
@@ -2699,7 +2740,7 @@ EXP_ST void setup_shm(void) {
 
 //aflnet_go
 //  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 24, IPC_CREAT | IPC_EXCL | 0600);
+  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 32, IPC_CREAT | IPC_EXCL | 0600);
 //aflnet_go#
 
   if (shm_id < 0) PFATAL("shmget() failed");
@@ -3657,7 +3698,7 @@ static u8 run_target(char** argv, u32 timeout) {
 
 //aflnet_go
 //  memset(trace_bits, 0, MAP_SIZE);
-  memset(trace_bits, 0, MAP_SIZE + 24);
+  memset(trace_bits, 0, MAP_SIZE + 32);
 //aflnet_go#  
 
   MEM_BARRIER();
@@ -4575,6 +4616,10 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     keeping = 1;
 
   }
+  // aflnet_go
+  // 为了防止更多状态没有加入ipsm状态图，加入下面这一句，但是会崩溃，所以先去掉
+  //if (state_aware_mode) update_state_aware_variables(queue_top, 0);
+  // aflnet_go#
 
   switch (fault) {
 
@@ -5799,7 +5844,7 @@ static void show_stats(void) {
     u32 i = 0;
 
     for(i = 0; i < state_ids_count; i++) {
-      u32 state_id = state_ids[i];
+      u64 state_id = state_ids[i];
 
       k = kh_get(hms, khms_states, state_id);
       if (k != kh_end(khms_states)) {
@@ -9427,8 +9472,8 @@ int stricmp(char const *a, char const *b) {
   }
 }
 
-u32 str_to_u32(char *str){
-  u32 num = 0;
+u32 str_to_u64(char *str){
+  u64 num = 0;
   for(int i=0; str[i]!='\n'; i++){
     num = num*10 + str[i]-'0';
   }
@@ -9441,12 +9486,12 @@ void init_state_target(){
   char txt[50];
   sprintf(filename, "%s/state_targets.txt",dir);
   FILE *fp = fopen(filename,"r");
-  u32 state = 0;
+  u64 state = 0;
   if(fp){
     while(fgets(txt,50,fp)!=NULL){
-      state = str_to_u32(txt);
+      state = str_to_u64(txt);
       if(state != 0){
-        state_targets = (u32 *) ck_realloc(state_targets, (state_targets_count + 1) * sizeof(u32));
+        state_targets = (u64 *) ck_realloc(state_targets, (state_targets_count + 1) * sizeof(u64));
         state_targets[state_targets_count++] = state;
       }
     }

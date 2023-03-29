@@ -73,9 +73,9 @@ static const unsigned int prime_2 = 5009;
    It will end up as .comm, so it shouldn't be too wasteful. */
 
 // aflnet_go
-//在MAP_SIZE + 16的基础上再加8，用来存储目标代码被运行的标志
+//在MAP_SIZE + 16的基础上再加8，用来存储目标代码被运行的标志,再加8来存储状态值
 //u8  __afl_area_initial[MAP_SIZE + 16];
-u8  __afl_area_initial[MAP_SIZE + 24];
+u8  __afl_area_initial[MAP_SIZE + 32];
 // aflnet_go#
 
 u8* __afl_area_ptr = __afl_area_initial;
@@ -216,7 +216,7 @@ int __afl_persistent_loop(unsigned int max_cnt) {
     if (is_persistent) {
       // aflnet_go
       //memset(__afl_area_ptr, 0, MAP_SIZE + 16);
-      memset(__afl_area_ptr, 0, MAP_SIZE + 24);
+      memset(__afl_area_ptr, 0, MAP_SIZE + 32);
       // aflnet_go#
       __afl_area_ptr[0] = 1;
       __afl_prev_loc = 0;
@@ -492,5 +492,6 @@ void llvm_profiling_call(const char* bbname) {
         }
     }
 }
+
 #endif /* ^AFLGO_TRACING */
 

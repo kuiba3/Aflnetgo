@@ -10,7 +10,7 @@ typedef struct {
   int start_byte;                 /* The start byte, negative if unknown. */
   int end_byte;                   /* The last byte, negative if unknown. */
   char modifiable;                /* The modifiable flag. */
-  unsigned int *state_sequence;   /* The annotation keeping the state feedback. */
+  unsigned long long *state_sequence;   /* The annotation keeping the state feedback. */
   unsigned int state_count;       /* Number of states stored in state_sequence. */
 } region_t;
 
@@ -20,7 +20,7 @@ typedef struct {
 } message_t;
 
 typedef struct {
-  u32 id;                     /* state id */
+  u64 id;                     /* state id */
   u8 is_covered;              /* has this state been covered */
   u32 paths;                  /* total number of paths exercising this state */
   u32 paths_discovered;       /* total number of new paths that have been discovered when this state is targeted/selected */
@@ -52,7 +52,7 @@ enum {
 #define message_t_freer(x)
 KLIST_INIT(lms, message_t *, message_t_freer)
 
-KHASH_SET_INIT_INT(hs32)
+KHASH_SET_INIT_INT(hs64)
 
 // Initialize a hash table with int key and value is of type state_info_t
 KHASH_INIT(hms, khint32_t, state_info_t *, 1, kh_int_hash_func, kh_int_hash_equal)
@@ -128,7 +128,7 @@ void str_rtrim(char* a_str);
 int parse_net_config(u8* net_config, u8* protocol, u8** ip_address, u32* port);
 
 /* Convert state sequence to string */
-u8* state_sequence_to_string(unsigned int *stateSequence, unsigned int stateCount);
+u8* state_sequence_to_string(u64 *stateSequence, unsigned int stateCount);
 
 /* Print the hexdump of a segment of a buffer preceded by a messsage */
 void hexdump(unsigned char *msg, unsigned char * buf, int start, int end);

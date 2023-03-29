@@ -61,6 +61,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Analysis/CFGPrinter.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 
 #if defined(LLVM34)
@@ -209,7 +210,6 @@ bool AFLCoverage::runOnModule(Module &M) {
   
   
 	//aflnet_go
-  
   bool is_aflnetgo = false;
   bool is_aflnetgo_preprocessing = false;
 
@@ -249,7 +249,7 @@ bool AFLCoverage::runOnModule(Module &M) {
     while (std::getline(targetsfile, line))
       targets.push_back(line);
     targetsfile.close();
-   
+    
   
     std::ifstream cf(DistanceFile);
     if (cf.is_open()) {
@@ -527,16 +527,19 @@ bool AFLCoverage::runOnModule(Module &M) {
     IntegerType *Int8Ty  = IntegerType::getInt8Ty(C);
     IntegerType *Int32Ty = IntegerType::getInt32Ty(C);
     IntegerType *Int64Ty = IntegerType::getInt64Ty(C);
+    PointerType *Int64PtrTy = IntegerType::getInt64PtrTy(C);
 
 #ifdef __x86_64__
     IntegerType *LargestType = Int64Ty;
     ConstantInt *MapCntLoc = ConstantInt::get(LargestType, MAP_SIZE + 8);
     ConstantInt *MapTargetPathLoc = ConstantInt::get(LargestType, MAP_SIZE + 16);
+    ConstantInt *MapStateLoc = ConstantInt::get(LargestType, MAP_SIZE + 24);
     
 #else
     IntegerType *LargestType = Int32Ty;
     ConstantInt *MapCntLoc = ConstantInt::get(LargestType, MAP_SIZE + 4);
     ConstantInt *MapTargetPathLoc = ConstantInt::get(LargestType, MAP_SIZE + 8);
+    ConstantInt *MapStateLoc = ConstantInt::get(LargestType, MAP_SIZE + 12);
 #endif
     ConstantInt *MapDistLoc = ConstantInt::get(LargestType, MAP_SIZE);
     ConstantInt *One = ConstantInt::get(LargestType, 1);
@@ -557,21 +560,45 @@ bool AFLCoverage::runOnModule(Module &M) {
     for (auto &F : M) {
 
       int distance = -1;
-
+           
       for (auto &BB : F) {
 
         distance = -1;
         
         BasicBlock::iterator IP = BB.getFirstInsertionPt();
         IRBuilder<> IRB(&(*IP));
+        
+        
 
         if (is_aflnetgo) {
+          std::string func = "__aflnet_go_instrument";
+          // 对基本块和状态赋值的基本块进行比较，如果相同，进行插桩
+          if (!func.compare(F.getName().str())){         
+            // 获取共享内存的指针值
+            LoadInst *MapPtr = IRB.CreateLoad(AFLMapPtr);
+            MapPtr->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+                            
+            // 通过偏移获取保存state值的共享内存的指针值
+            Value *MapStatePathPtr = IRB.CreateBitCast(
+                IRB.CreateGEP(MapPtr, MapStateLoc), Int64Ty->getPointerTo());
+            
+            // 插桩一个函数调用，来对共享空间state进行赋值
+            std::vector<Type *> paramTypes = {Int32Ty, Int64Ty, Int64Ty, Int64PtrTy};
+            Type *retType = Type::getVoidTy(C);
+            FunctionType *stateFuncType = FunctionType::get(retType, paramTypes, false);
+            FunctionCallee stateFunc = F.getParent()->getOrInsertFunction("__aflnet_go_instrument_call", stateFuncType);
+            IRB.CreateCall(stateFunc, {F.getArg(0), F.getArg(1), F.getArg(2), MapStatePathPtr});
+            
+          }
 
           std::string bb_name;
+          int i_num = 0;
+          
           for (auto &I : BB) {
             std::string filename;
             unsigned line;
             getDebugLoc(&I, filename, line);
+            i_num ++;
 
             if (filename.empty() || line == 0)
               continue;
@@ -607,7 +634,7 @@ bool AFLCoverage::runOnModule(Module &M) {
                        
             }
             
-
+     
             bb_name = filename + ":" + std::to_string(line);
             break;
           }
