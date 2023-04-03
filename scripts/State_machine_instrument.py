@@ -44,7 +44,6 @@ def reduce_enum(enum_list, enum_len=15):
             if file.endswith(('.cpp', '.c', '.cc', '.h', '.hh', '.h.in')):
                 with open(os.path.join(root, file), 'r+', encoding="utf-8", errors='ignore') as f:
                     content = f.read()
-                    enum_index = 0
                     for name in enum_list:
                         result = search_index("^(?: |\t)*?(?:\w+\.|\w+->)*?" + name+" ?= ?\w+?;", content)
                         for it in result:
@@ -201,7 +200,7 @@ def instrument(enum_variable_uniq):
                         result = search_index("^(?: |\t)*?(?:\w+\.|\w+->)*?" + name+" ?= ?\w+?;", content)
                         len_old = len(content)
                         content = package_content(content, result, file, root, enum_index)
-                        if len(content) > len_old:
+                        if len(content) > len_old or not redundance_mode:
                             enum_index += 1
                     if not debug:
                         f.seek(0)
@@ -211,7 +210,7 @@ def instrument(enum_variable_uniq):
 
 if __name__ == '__main__':
     debug = False
-    redundance_mode = True
+    redundance_mode = False
     if debug:
         path = "/home/txf/SGFuzz-master/sanitizer/dcmtk_2"
         blocked_variables_file = "t.txt"
@@ -237,6 +236,10 @@ if __name__ == '__main__':
         enum_variable_uniq = filter_file(blocked_variables_file, enum_variable_uniq)
     enum_variable_uniq = reduce_enum(enum_variable_uniq)
     instrument(enum_variable_uniq)
+    fo = open(enum_instrument_variable.txt)
+    for t in enum_variable_uniq:
+        fo.write(t + '\n')
+    fo.close()
     if debug:
         print("--------------Final states----------------")
         print(enum_variable_uniq)

@@ -1136,7 +1136,7 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
   if (is_state_sequence_interesting(state_sequence, state_count)) {
     //Save the current kl_messages to a file which can be used to replay the newly discovered paths on the ipsm
     u8 *temp_str = state_sequence_to_string(state_sequence, state_count);
-    u8 *fname = alloc_printf("%s/replayable-new-ipsm-paths/id:%s:%s", out_dir, temp_str, dry_run ? basename(q->fname) : "new");
+    u8 *fname = alloc_printf("%s/replayable-new-ipsm-paths/id_%s_%s", out_dir, temp_str, dry_run ? basename(q->fname) : "new");
     save_kl_messages_to_file(kl_messages, fname, 1, messages_sent);
     ck_free(temp_str);
     ck_free(fname);
@@ -1520,7 +1520,7 @@ int send_over_network()
         has_new_targetstate = 1;
         if(state_targets_count > 0){
           for(int i=0; i<state_targets_count; i++){
-            if(state_sequence[state_count-1] == state_targets[i] || state_sequence[state_count-1] == 0)
+            if(state_sequence[state_count-2] == state_targets[i] || state_sequence[state_count-2] == 0)
               has_new_targetstate = 0;
           }
         }
@@ -1528,7 +1528,8 @@ int send_over_network()
       
       if(has_new_targetstate){
         state_targets = (u64 *) ck_realloc(state_targets, (state_targets_count + 1) * sizeof(u64));
-        state_targets[state_targets_count++] = state_sequence[state_count-1];
+        // 状态a到b的过程中执行到了目标点，那说明目标状态应该是a，运行完目标点后状态才是b，所以目标状态为state_sequence[state_count-2]
+        state_targets[state_targets_count++] = state_sequence[state_count-2];
         
         // 更新状态到目标状态的距离
         update_state_distance();
@@ -4384,7 +4385,7 @@ static void pivot_inputs(void) {
        This is valuable for resuming fuzzing runs. */
 
 #ifndef SIMPLE_FILES
-#  define CASE_PREFIX "id:"
+#  define CASE_PREFIX "id_"
 #else
 #  define CASE_PREFIX "id_"
 #endif /* ^!SIMPLE_FILES */
@@ -4423,7 +4424,7 @@ static void pivot_inputs(void) {
       u8* use_name = strstr(rsl, ",orig:");
 
       if (use_name) use_name += 6; else use_name = rsl;
-      nfn = alloc_printf("%s/queue/id:%06u,orig:%s", out_dir, id, use_name);
+      nfn = alloc_printf("%s/queue/id_%06u,orig:%s", out_dir, id, use_name);
 
 #else
 
@@ -4570,7 +4571,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 //    fn = alloc_printf("%s/queue/id:%06u,%s", out_dir, queued_paths,
 //                      describe_op(hnb));
   
-  fn = alloc_printf("%s/queue/id:%06u,%llu,%s", out_dir, queued_paths,
+  fn = alloc_printf("%s/queue/id_%06u,%llu,%s", out_dir, queued_paths,
                       get_cur_time() - start_time,
                       describe_op(hnb));
 //aflnet_go#
@@ -4673,7 +4674,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 //aflnet_go
 //      fn = alloc_printf("%s/replayable-hangs/id:%06llu,%s", out_dir,
 //                        unique_hangs, describe_op(0));
-      fn = alloc_printf("%s/hangs/id:%06llu,%llu,%s", out_dir,
+      fn = alloc_printf("%s/replayable-hangs/id_%06llu,%llu,%s", out_dir,
                         unique_hangs, get_cur_time() - start_time,
                         describe_op(0));      
 //aflnet_go#
@@ -4723,7 +4724,7 @@ keep_as_crash:
 //      fn = alloc_printf("%s/replayable-crashes/id:%06llu,sig:%02u,%s", out_dir,
 //                        unique_crashes, kill_signal, describe_op(0));
             
-      fn = alloc_printf("%s/replayable-crashes/id:%06llu,%llu,sig:%02u,%s", out_dir,
+      fn = alloc_printf("%s/replayable-crashes/id_%06llu,%llu,sig_%02u,%s", out_dir,
                         unique_crashes, get_cur_time() - start_time,
                         kill_signal, describe_op(0));
 //aflnet_go#
