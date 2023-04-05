@@ -683,13 +683,29 @@ u32 index_search(u32 *A, u32 n, u32 val) {
   return index;
 }
 
+u64 get_path_hash(u64 from, u64 to){
+  u64 *states_tmp = ck_alloc(sizeof(u64)*2);
+  states_tmp[0] = from;
+  states_tmp[1] = to;
+  u64 path_id = hash32(states_tmp, 2*sizeof(u64), HASH_CONST);
+  if(states_tmp){
+    ck_free(states_tmp);
+    states_tmp = NULL;
+  }
+  return path_id;
+}
+
+
 // aflnet_go
 void update_state_distance(){
   khiter_t k;
   u64 max_count = 0;
-  for (k = kh_begin(khedge); k != kh_end(khedge); ++k)
-		if (kh_exist(khedge, k) && kh_value(khedge,k)>max_count)
+  for (k = kh_begin(khedge); k != kh_end(khedge); ++k){
+    if (kh_exist(khedge, k) && kh_value(khedge,k)>max_count)
       max_count = kh_value(khedge,k);
+    if(kh_exist(khedge, k)) fprintf(stderr, "k:%llu, kh_value(khedge,k):%llu\n", k, kh_value(khedge,k));
+  }
+  fprintf(stderr, "in update_state_distance, max_count:%llu, size of max_count:%llu, state_targets_count:%u\n", max_count, sizeof(max_count), state_targets_count);
   
   // 生成状态转化图的数据结构,其中顶点表示入度的点，边表示从其他点到顶点的边，为逆邻接表结构
   state_node *state_nodes = (state_node *) ck_alloc (state_ids_count * sizeof(state_node));
@@ -714,7 +730,8 @@ void update_state_distance(){
           state_next->adjvex = i;
                     
           // 使用最大执行次数的边除以此边的执行次数作为边的距离
-          path_id = (state_ids[j]<<4)^state_ids[i];
+          //path_id = (state_ids[j]<<4)^state_ids[i];
+          path_id = get_path_hash(state_ids[j], state_ids[i]);
           k = kh_get(hedge, khedge, path_id);
           if (k == kh_end(khedge))
             state_next->dd_edge = (double)INF;
@@ -729,6 +746,7 @@ void update_state_distance(){
     }
     
   }
+  
  
   max_state_distance = -1.0;
   min_state_distance = -1.0;
@@ -833,7 +851,7 @@ void update_state_distance(){
             kh_val(khms_states, k)->distance_to_target_state = 1000.0/(kh_val(khms_states, k)->distance_to_target_state * Reachable_target_num[j]);
           
           //******************* debug ***************************//
-          fprintf(stderr,"\nstate_Id: %llu,Reachable_target_num:%u , distance_to_target_state: %4lf\n", state_ids[j], Reachable_target_num[j], kh_val(khms_states, k)->distance_to_target_state);
+          fprintf(stderr,"state_Id: %llu,Reachable_target_num:%u , distance_to_target_state: %4lf\n", state_ids[j], Reachable_target_num[j], kh_val(khms_states, k)->distance_to_target_state);
           //******************* #debug ***************************//
           if (max_state_distance < 0){
             if (kh_val(khms_states, k)->distance_to_target_state != INF)  max_state_distance = kh_val(khms_states, k)->distance_to_target_state;
@@ -926,7 +944,7 @@ u32 update_scores_and_select_next_state(u8 mode) {
   //Update the states' score
   
   //******************* debug ***************************//
-  fprintf(stderr,"in update_scores_and_select_next_state\n");
+  fprintf(stderr,"in update_scores_and_select_next_state,state_favor_count:%d\n", state_favor_count);
   //******************* #debug ***************************//
   
   for(i = 0; i < state_ids_count; i++) {
@@ -1373,9 +1391,10 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
 // aflnet_go
 // 获取路径的id，算法为节点a和b：a->b的id为(a<<4) xor b
 u64 *get_path_ids(u64 *state_sequence, unsigned int state_count){
-  u64 *path_ids =  ck_alloc (sizeof(unsigned int *) * (state_count-1));
+  u64 *path_ids =  ck_alloc (sizeof(u64) * (state_count-1));
   for(int i = state_count-1; i>0; i--){
-    path_ids[i-1] = ((state_sequence[i-1])<<4)^(state_sequence[i]);
+    //path_ids[i-1] = ((state_sequence[i-1])<<4)^(state_sequence[i]);
+    path_ids[i-1] = get_path_hash(state_sequence[i-1], state_sequence[i]);
   }
   return path_ids;
 }
@@ -1515,8 +1534,8 @@ int send_over_network()
       //unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);      
       
       int has_new_targetstate = 0;
-      // 取state_count>1是因为返回初始状态为0，所以有新的状态的话，状态序列数量至少为2
-      if(state_count>1){
+      // 取state_count>2是因为不取状态0，假如返回状态是0,a,b,此时取目标状态为a,
+      if(state_count>2){
         has_new_targetstate = 1;
         if(state_targets_count > 0){
           for(int i=0; i<state_targets_count; i++){
