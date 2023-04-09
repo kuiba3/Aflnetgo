@@ -52,10 +52,10 @@ enum {
 #define message_t_freer(x)
 KLIST_INIT(lms, message_t *, message_t_freer)
 
-KHASH_SET_INIT_INT(hs64)
+KHASH_SET_INIT_INT64(hs64)
 
 // Initialize a hash table with int key and value is of type state_info_t
-KHASH_INIT(hms, khint32_t, state_info_t *, 1, kh_int_hash_func, kh_int_hash_equal)
+KHASH_INIT(hms, khint64_t, state_info_t *, 1, kh_int_hash_func, kh_int_hash_equal)
 
 KHASH_INIT(hedge, khint64_t, u64, 1, kh_int_hash_func, kh_int_hash_equal)
 

@@ -236,7 +236,7 @@ if __name__ == '__main__':
         enum_variable_uniq = filter_file(blocked_variables_file, enum_variable_uniq)
     enum_variable_uniq = reduce_enum(enum_variable_uniq)
     instrument(enum_variable_uniq)
-    fo = open(enum_instrument_variable.txt)
+    fo = open('enum_instrument_variable.txt', 'w+')
     for t in enum_variable_uniq:
         fo.write(t + '\n')
     fo.close()

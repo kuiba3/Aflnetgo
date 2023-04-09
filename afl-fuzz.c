@@ -886,8 +886,9 @@ void update_state_distance(){
 
 
 /* Calculate state scores and select the next state */
-u32 update_scores_and_select_next_state(u8 mode) {
-  u32 result = 0, i;
+u64 update_scores_and_select_next_state(u8 mode) {
+  u64 result = 0;
+  u32 i;
 
   if (state_ids_count == 0) return 0;
 
@@ -1012,7 +1013,7 @@ u32 update_scores_and_select_next_state(u8 mode) {
 }
 
 /* Select a target state at which we do state-aware fuzzing */
-unsigned int choose_target_state(u8 mode) {
+u64 choose_target_state(u8 mode) {
   u64 result = 0;
 
   switch (mode) {
@@ -1052,7 +1053,7 @@ unsigned int choose_target_state(u8 mode) {
 }
 
 /* Select a seed to exercise the target state */
-struct queue_entry *choose_seed(u32 target_state_id, u8 mode)
+struct queue_entry *choose_seed(u64 target_state_id, u8 mode)
 {
   khint_t k;
   state_info_t *state;
@@ -1307,7 +1308,7 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
     unsigned int regional_state_count = q->regions[i].state_count;
     if (regional_state_count > 0) {
       //reachable_state_id is the last ID in the state_sequence
-      unsigned int reachable_state_id = q->regions[i].state_sequence[regional_state_count - 1];
+      u64 reachable_state_id = q->regions[i].state_sequence[regional_state_count - 1];
 
       k = kh_get(hms, khms_states, reachable_state_id);
       if (k != kh_end(khms_states)) {
@@ -4440,10 +4441,10 @@ static void pivot_inputs(void) {
 
 #ifndef SIMPLE_FILES
 
-      u8* use_name = strstr(rsl, ",orig:");
+      u8* use_name = strstr(rsl, ",orig_");
 
       if (use_name) use_name += 6; else use_name = rsl;
-      nfn = alloc_printf("%s/queue/id_%06u,orig:%s", out_dir, id, use_name);
+      nfn = alloc_printf("%s/queue/id_%06u,orig_%s", out_dir, id, use_name);
 
 #else
 
@@ -9492,7 +9493,7 @@ int stricmp(char const *a, char const *b) {
   }
 }
 
-u32 str_to_u64(char *str){
+u64 str_to_u64(char *str){
   u64 num = 0;
   for(int i=0; str[i]!='\n'; i++){
     num = num*10 + str[i]-'0';

@@ -1,19 +1,17 @@
 import re,os,sys
-
-
-
-if __name__ == '__main__':
-	content = ''
-	f1 = open(sys.argv[1])
-	lines = f1.readlines()
-	for i in range(len(lines)):
-		if '<put $WORK value here>' not in lines[i]:
-			content += lines[i]
-		else:
-			l = re.sub('<put \$WORK value here>/dcmtk/build/bin', sys.argv[2],  lines[i])
-			content += l
-	f1.close()
-	f2 = open(sys.argv[2] + '/dcmqrscp.cfg', 'w+')
-	f2.write(content)
-	f2.close()
-
+f1 = open('dcmqrscp.cfg')
+lines = f1.readlines()
+f1.close()
+f2 = open('dcmqrscp1.cfg', 'w+')
+#
+if len(sys.argv) > 1:
+	workdir = sys.argv[1]
+	print(workdir)
+print(lines)
+for l in lines:
+	l = re.sub('<put \$WORK value here>', workdir, l)
+	print(l)
+	f2.write(l)
+f2.close()
+#os.remove('dcmqrscp.cfg')
+os.rename('dcmqrscp1.cfg', 'dcmqrscp.cfg')
