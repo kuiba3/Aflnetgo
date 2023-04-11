@@ -316,7 +316,8 @@ static double max_distance = -1.0;     /* Maximal distance for any input   */
 static double min_distance = -1.0;     /* Minimal distance for any input   */
 static u32 t_x = 10;                  /* Time to exploitation (Default: 10 min) */
 
-#define INF 4294967295
+//#define INF 4294967295
+static const double INF = 10000000000000;
 
 static double max_state_distance = -1.0;
 static double min_state_distance = -1.0;
@@ -794,7 +795,7 @@ void update_state_distance(){
   
     //使用dijkstra算法计算各个状态节点到目标点的距离，并保存在dis数组中
     for (int j=0; j<state_ids_count;j++){
-      u32 min_num = INF;
+      double min_num = INF;
       
       for(int k=0;k<state_ids_count;k++){
         if(min_num > dis[k] && book[k] == 0){
@@ -819,8 +820,8 @@ void update_state_distance(){
           }
         if (dis[index_temp] == INF)
           dis[index_temp] = state_temp->dd_edge;
-        else if(dis[index_temp] > dis[min_index] + state_temp->dd_edge)
-          dis[index_temp] = dis[min_index] + state_temp->dd_edge;
+        else if(dis[index_temp] > dis[min_index] * state_temp->dd_edge)
+          dis[index_temp] = dis[min_index] * state_temp->dd_edge;
         
         state_temp = state_temp->next;
       }
