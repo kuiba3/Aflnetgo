@@ -53,7 +53,7 @@ def instrument(filename):
 		#print(outfile)
 		fp_name = 'fp' + str(num)
 		num_name = 'num'+ str(num)
-		text = ' FILE *'+ fp_name +' = fopen("'+ outfile +'", "r"); int '+ num_name +'=0; if('+fp_name+'){fscanf('+fp_name+', "%d", &'+num_name+'); fclose('+fp_name+');} '+num_name+'++; '+fp_name+'=fopen("'+ outfile +'", "w"); if('+fp_name+'){fprintf('+fp_name+',"%d", '+num_name+'); fclose('+fp_name+');}'
+		text = ' FILE *'+ fp_name +' = fopen("'+ outfile +'", "a+"); if('+fp_name+'){fprintf('+fp_name+',"1"); fclose('+fp_name+');}'
 
 		if re.search(';', line) and not for_line:
 			if not re.search('{', line) and while_flag > 0 :

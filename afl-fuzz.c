@@ -122,6 +122,9 @@ enum {
   /* 02 */ SAN_LIN,                   /* Linear schedule                  */
   /* 03 */ SAN_QUAD                   /* Quadratic schedule               */
 };
+
+u32 cpu_start = 0;
+
 //aflnet_go#
 
 EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
@@ -1794,8 +1797,7 @@ static void bind_to_free_cpu(void) {
   }
 
   closedir(d);
-
-  for (i = 0; i < cpu_core_count; i++) if (!cpu_used[i]) break;
+  for (i = cpu_start; i < cpu_core_count; i++) if (!cpu_used[i]) break;
 
   if (i == cpu_core_count) {
 
@@ -9551,7 +9553,7 @@ int main(int argc, char** argv) {
 //aflnet_go
 //  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QN:D:W:w:e:P:KEq:s:RFc:l:")) > 0)
 //  param b is AFLGO's c
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Qz:b:N:D:W:w:e:P:KEq:s:RFc:l:")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Qz:b:N:D:W:w:e:P:KEq:s:RFc:l:U:")) > 0)
 //aflnet_go#
     switch (opt) {
 
@@ -9627,6 +9629,9 @@ int main(int argc, char** argv) {
           break;
 
       }
+      case 'U':
+         if(sscanf(optarg, "%lu", &cpu_start) < 1) FATAL("Bad syntax used for -U");
+      break;
 
       case 'm': { /* mem limit */
 
@@ -9696,6 +9701,9 @@ int main(int argc, char** argv) {
         if (crash_mode) FATAL("Multiple -C options not supported");
         crash_mode = FAULT_CRASH;
         break;
+      
+
+
 
       case 'n': /* dumb mode */
 
