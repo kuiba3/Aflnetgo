@@ -702,14 +702,15 @@ u64 get_path_hash(u64 from, u64 to){
 
 // aflnet_go
 void update_state_distance(){
-  khiter_t k;
-  u64 max_count = 0;
+  khiter_t k,h;
+  
+  /*u64 max_count = 0;
   for (k = kh_begin(khedge); k != kh_end(khedge); ++k){
     if (kh_exist(khedge, k) && kh_value(khedge,k)>max_count)
       max_count = kh_value(khedge,k);
     if(kh_exist(khedge, k)) fprintf(stderr, "k:%llu, kh_value(khedge,k):%llu\n", k, kh_value(khedge,k));
   }
-  fprintf(stderr, "in update_state_distance, max_count:%llu, size of max_count:%llu, state_targets_count:%u\n", max_count, sizeof(max_count), state_targets_count);
+  fprintf(stderr, "in update_state_distance, max_count:%llu, size of max_count:%llu, state_targets_count:%u\n", max_count, sizeof(max_count), state_targets_count);*/
   
   // 生成状态转化图的数据结构,其中顶点表示入度的点，边表示从其他点到顶点的边，为逆邻接表结构
   state_node *state_nodes = (state_node *) ck_alloc (state_ids_count * sizeof(state_node));
@@ -739,8 +740,15 @@ void update_state_distance(){
           k = kh_get(hedge, khedge, path_id);
           if (k == kh_end(khedge))
             state_next->dd_edge = (double)INF;
-          else
-            state_next->dd_edge = (double)max_count/(double)kh_val(khedge,k);
+          else{            
+            h = kh_get(hms, khms_states, state_ids[j]);
+            if (h != kh_end(khms_states)) {
+              state_next->dd_edge = (double)kh_val(khms_states, h)->out_degree/(double)kh_val(khedge,k);
+            }
+            else
+              state_next->dd_edge = 1;
+            
+          }
           
           state_next->next = state_nodes[i].edge;
           state_nodes[i].edge = state_next;
@@ -1200,6 +1208,7 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
       
           // aflnet_go
           newState_From->distance_to_target_state = INF;
+          newState_From->out_degree = 1;
           // aflnet_go#
 
           k = kh_put(hms, khms_states, prevStateID, &discard);
@@ -1231,9 +1240,11 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
           newState_To->selected_seed_index = 0;
           newState_To->seeds = NULL;
           newState_To->seeds_count = 0;
+          
       
           // aflnet_go
           newState_To->distance_to_target_state = INF;
+          newState_To->out_degree = 1;
           // aflnet_go#
 
           k = kh_put(hms, khms_states, curStateID, &discard);
@@ -1343,6 +1354,7 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
     
         // aflnet_go
         newState->distance_to_target_state = INF;
+        newState->out_degree = 1;
         // aflnet_go#
 
         k = kh_put(hms, khms_states, reachable_state_id, &discard);
@@ -1617,6 +1629,17 @@ HANDLE_RESPONSES:
     //if (state_sequence) ck_free(state_sequence);
     return 0;
   }
+  
+  // 统计每个状态的出度
+  khiter_t h;
+  for (int i=0; i<state_count-1; i++){
+    h = kh_get(hms, khms_states, state_sequence[i]);
+    if (h != kh_end(khms_states)) {
+      kh_val(khms_states, h)->out_degree++;
+    }
+    
+  }
+  
   
   
   u64 *path_ids = get_path_ids(state_sequence, state_count);

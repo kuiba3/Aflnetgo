@@ -33,6 +33,7 @@ typedef struct {
   
   //aflnet_go
   double distance_to_target_state;				  /* Distance to target state */
+  u64 out_degree;
   //aflnet_go#
 } state_info_t;
 
