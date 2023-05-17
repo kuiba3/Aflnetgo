@@ -303,6 +303,11 @@
 
 #define FORKSRV_FD          198
 
+/* SaBRe file descriptors */
+#define SABRE_DATA_SOCKET (FORKSRV_FD + 2)
+#define SABRE_CTL_SOCKET (SABRE_DATA_SOCKET + 1)
+
+
 /* Fork server init timeout multiplier: we'll wait the user-selected
    timeout plus this much for the fork server to spin up. */
 

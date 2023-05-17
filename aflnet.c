@@ -1215,6 +1215,11 @@ unsigned int* extract_response_codes_dtls12(unsigned char* buf, unsigned int buf
         }
       }
 
+      if ((state_count+1) * sizeof(unsigned int) >= MAX_ALLOC) {
+        *state_count_ref = state_count;
+        return state_sequence;
+      }
+
       status_code = (content_type << 8) + message_type;
       state_count++;
       state_sequence = (unsigned int *)ck_realloc(state_sequence, state_count * sizeof(unsigned int));
@@ -1691,6 +1696,34 @@ int net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf
   // rv == 0 poll timeout or all data pending after poll has been received successfully
   return 0;
 }
+
+int net_send_sbr(int sockfd, char *mem, unsigned int len)
+{
+  // TODO(andronat): Do we need MSG_EOR and MSG_DONTWAIT?
+  // TODO(andronat): Warn user if /proc/sys/net/core/wmem_default is too small.
+  return send(sockfd, mem, len, MSG_NOSIGNAL);
+}
+
+// TODO(andronat): temp_buf should equal to /proc/sys/net/core/rmem_default.
+static char temp_buf[250000] = {0};
+
+int net_recv_sbr(int sockfd, char **response_buf, unsigned int *len)
+{
+  int n = recv(sockfd, temp_buf, sizeof(temp_buf), 0);
+  if (n <= 0)
+    return -1;
+
+  *response_buf = (unsigned char *)ck_realloc(*response_buf, *len + n + 1);
+  memcpy(&(*response_buf)[*len], temp_buf, n);
+  (*response_buf)[(*len) + n] = '\0';
+  *len = *len + n;
+  return n;
+}
+
+// Q: Why did we implement the guiding system with sbr_ctl_fd?
+// A: This won't work... POLLOUT is always there even if socket is closed.
+// Curious case: if socket is closed, poll will return events and we need
+// to check send's errno and receieve will always return 0 len strings.
 
 // Utility function
 

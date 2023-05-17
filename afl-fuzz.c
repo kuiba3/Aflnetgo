@@ -105,7 +105,9 @@ EXP_ST u8 *in_dir,                    /* Input directory with test cases  */
           *in_bitmap,                 /* Input bitmap                     */
           *doc_path,                  /* Path to documentation dir        */
           *target_path,               /* Path to target binary            */
-          *orig_cmdline;              /* Original command line            */
+          *orig_cmdline,              /* Original command line            */
+          *sbr_plugin_path;           /* Path to SaBRe's plugin to load   */
+          
 
 EXP_ST u32 exec_tmout = EXEC_TIMEOUT; /* Configurable exec timeout (ms)   */
 static u32 hang_tmout = EXEC_TIMEOUT; /* Timeout used for hang det (ms)   */
@@ -147,6 +149,7 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            shuffle_queue,             /* Shuffle input queue?             */
            bitmap_changed = 1,        /* Time to update bitmap?           */
            qemu_mode,                 /* Running in QEMU mode?            */
+           sbr_mode,                  /* Running in SaBRe mode?           */
            skip_requested,            /* Skip request, via SIGUSR1        */
            run_over10m,               /* Run time over 10 minutes?        */
            persistent_mode,           /* Running in persistent mode?      */
@@ -157,8 +160,12 @@ static s32 out_fd,                    /* Persistent fd for out_file       */
            dev_urandom_fd = -1,       /* Persistent fd for /dev/urandom   */
            dev_null_fd = -1,          /* Persistent fd for /dev/null      */
            fsrv_ctl_fd,               /* Fork server control pipe (write) */
-           fsrv_st_fd;                /* Fork server status pipe (read)   */
-
+           fsrv_st_fd,                /* Fork server status pipe (read)   */
+           sbr_data_fd,               /* Transfere data to/from SaBRe     */
+           sbr_ctl_fd,                /* Understand state of SaBRe client */
+           sbr_data_fd_target,
+           sbr_ctl_fd_target;
+           
 static s32 forksrv_pid,               /* PID of the fork server           */
            child_pid = -1,            /* PID of the fuzzed program        */
            out_dir_fd = -1;           /* FD of the lock file              */
@@ -976,8 +983,8 @@ u64 update_scores_and_select_next_state(u8 mode) {
       state->score = ceil(1000 * pow(2, -log10(log10(state->fuzzs + 1) * state->selected_times + 1)) * pow(2, log(state->paths_discovered + 1)));
       //aflnet_go
       if (state_targets){
-        // 每fuzz 9个种子，更新一次状态距离
-        if (state_favor_count % 10 == 0){
+        // 每fuzz 10000个种子，更新一次状态距离
+        if (state_favor_count % 10000 == 0){
           update_state_distance();
           state_favor_count++;
         }
@@ -1405,6 +1412,98 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
   //if (state_sequence) ck_free(state_sequence);
 }
 
+#ifdef PRINT_BENCH
+static double get_current_time() {
+  struct timeval t;
+  gettimeofday(&t, 0);
+  return t.tv_sec + t.tv_usec*1e-6;
+}
+#else
+static double get_current_time() {
+  return 0.0;
+}
+#endif
+
+// NOTE: This needs to be in sync with SaBRe.
+typedef enum {
+  GetNext = -2,
+  Timeout = -1,
+  Send,
+  Recv
+} TargetAction;
+
+static boolean target_is_dead() {
+  int status = kill(child_pid, 0);
+  if (status == 0)
+    return FALSE;
+
+  status = kill(-child_pid, 0);
+  if (status != 0) {
+    if (errno == ESRCH) {
+      return TRUE;
+    } else {
+      PFATAL("target_is_dead");
+    }
+  }
+  return FALSE;
+}
+
+static TargetAction target_will_do() {
+  TargetAction ta = {0};
+  int rc, periodic_check = 0;
+  do {
+    rc = recv(sbr_ctl_fd, &ta, sizeof(TargetAction), MSG_DONTWAIT);
+    // TODO: Check for: EAGAIN, EWOULDBLOCK, EINTR?
+    periodic_check++;
+    if (periodic_check == 5) {
+      if (target_is_dead()) {
+        return Timeout;
+      }
+      periodic_check = 0;
+    }
+    if (child_timed_out || stop_soon) {
+      return Timeout;
+    }
+  } while (rc <= 0);
+  return ta;
+}
+
+static void emulate_disconnect() {
+  send(sbr_data_fd, "", 0, MSG_NOSIGNAL|MSG_DONTWAIT);
+}
+
+static void drain_pending_msgs() {
+  char buf[1000] = {0};
+  TargetAction ta = {0};
+  int rc;
+
+  boolean sent_sig_once = FALSE;
+  while (TRUE) {
+    do { // Keep draining while there are still messages.
+      rc = recv(sbr_ctl_fd, &ta, sizeof(TargetAction), MSG_DONTWAIT);
+      rc += recv(sbr_data_fd, buf, sizeof(buf), MSG_DONTWAIT);
+    } while (rc > -2);
+
+    if (target_is_dead()) {
+      do {
+        rc += recv(sbr_ctl_fd_target, buf, sizeof(buf), MSG_DONTWAIT);
+        rc += recv(sbr_data_fd_target, buf, sizeof(buf), MSG_DONTWAIT);
+      } while (rc > -2);
+
+      return;
+    } else if (terminate_child && (child_pid > 0) && !sent_sig_once) {
+      // TODO: Technically there is a race condition for when child_pid dies,
+      // the OS could possibly recycle the pid and we will be waiting (or worse,
+      // killing) an unrelated to us process.
+      kill(-child_pid, SIGTERM);
+      kill(child_pid, SIGTERM);
+      sent_sig_once = TRUE;
+    } else if (child_timed_out || stop_soon) {
+      return;
+    }
+  }
+}
+
 // aflnet_go
 // 获取路径的id，算法为节点a和b：a->b的id为(a<<4) xor b
 u64 *get_path_ids(u64 *state_sequence, unsigned int state_count){
@@ -1415,6 +1514,266 @@ u64 *get_path_ids(u64 *state_sequence, unsigned int state_count){
   }
   return path_ids;
 }
+
+// TODO: Possible optimizations
+//       - Don't block on sbr_ctr_fd, try to loop (Done)
+//       - 2x drain_pending_msgs? We need them to clean channels
+//       - atomic sbr-protocol (Done)
+//       - kill sigkill vs sigterm vs 0
+//       - SEQ_protocol vs stream
+//       - New simpler inmem-FS
+//       - do we need ExitGroup afterall?
+
+int send_over_network_sbr() {
+  u8 likely_buggy = 0;
+
+  // Clean up the server if needed
+  if (cleanup_script)
+    system(cleanup_script);
+
+  // Clear the response buffer and reset the response buffer size
+  if (response_buf) {
+    ck_free(response_buf);
+    response_buf = NULL;
+    response_buf_size = 0;
+  }
+
+  if (response_bytes) {
+    ck_free(response_bytes);
+    response_bytes = NULL;
+  }
+  
+   // 在清理response_buf时进行清理全局变量state_sequence和state_count
+  if (state_sequence) {
+    ck_free(state_sequence);
+    state_sequence = NULL;
+    state_count = 0;
+  }
+
+  // Set timeout for socket data sending/receiving -- otherwise it causes a big
+  // delay if the server is still alive after processing all the requests
+  struct timeval to = {.tv_sec = 1};
+  setsockopt(sbr_data_fd, SOL_SOCKET, SO_SNDTIMEO, (char *)&to, sizeof(to));
+  setsockopt(sbr_data_fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&to, sizeof(to));
+  setsockopt(sbr_ctl_fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&to, sizeof(to));
+
+  double bstart_time = get_current_time();
+  TOKF("0 Conn: %lf %s", get_current_time() - bstart_time, response_buf);
+
+  // Retrieve early server response if needed.
+  bstart_time = get_current_time();
+  TargetAction ta = {0};
+  do {
+    ta = target_will_do();
+    if (ta == Send) {
+      ta = GetNext;
+      if (net_recv_sbr(sbr_data_fd, &response_buf, &response_buf_size) < 0)
+        goto HANDLE_RESPONSES;
+    } else if (ta == Recv) {
+      // There is not "hello" msg from the server.
+    } else if (ta == Timeout) {
+      goto HANDLE_RESPONSES;
+    } else {
+      PFATAL("Unexpected TargetAction: %d", ta);
+    }
+  } while (ta == GetNext);
+  TOKF("1 Recv: %lf %s", get_current_time() - bstart_time, response_buf);
+
+  // 获取运行到目标代码的标记地址
+#ifdef WORD_SIZE_64
+  u64* target_path = (u64*) (trace_bits + MAP_SIZE + 16);
+#else
+  u32* target_path = (u32*)(trace_bits + MAP_SIZE + 8);
+#endif
+
+  // write the request messages
+  messages_sent = 0;
+  for (kliter_t(lms) *it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
+    bstart_time = get_current_time();
+    int n = 0;
+    if (ta == Recv) {
+      ta = GetNext;
+      n = net_send_sbr(sbr_data_fd, kl_val(it)->mdata, kl_val(it)->msize);
+      if (n != kl_val(it)->msize) {
+        if ((n == -1) && (errno == EMSGSIZE)) {
+          // WARNF("SOCK_SEQPACKET doesn't support such long msgs: %u", kl_val(it)->msize);
+        } else {
+          WARNF("Failed to send msg with length: %u, actual: %d, errno: %s", kl_val(it)->msize, n, strerror(errno));
+        }
+        emulate_disconnect();
+        // ta = target_will_do();
+        goto HANDLE_RESPONSES;
+      }
+      messages_sent++;
+      
+      // 从共享内存中提取状态码到全局变量state_sequence，state_count
+      state_sequence = extract_state_codes(state_sequence, &state_count);
+      
+      //判断共享内存中运行到目标代码的标记是否不为0，不为0则把上一个状态作为目标状态加入队列
+      if(*target_path > 0){
+        //unsigned int state_count;
+        //unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);      
+        
+        int has_new_targetstate = 0;
+        // 取state_count>2是因为不取状态0，假如返回状态是0,a,b,此时取目标状态为a,
+        if(state_count>2){
+          has_new_targetstate = 1;
+          if(state_targets_count > 0){
+            for(int i=0; i<state_targets_count; i++){
+              if(state_sequence[state_count-2] == state_targets[i] || state_sequence[state_count-2] == 0)
+                has_new_targetstate = 0;
+            }
+          }
+        }
+        
+        if(has_new_targetstate){
+          state_targets = (u64 *) ck_realloc(state_targets, (state_targets_count + 1) * sizeof(u64));
+          // 状态a到b的过程中执行到了目标点，那说明目标状态应该是a，运行完目标点后状态才是b，所以目标状态为state_sequence[state_count-2]
+          state_targets[state_targets_count++] = state_sequence[state_count-2];
+          
+          // 更新状态到目标状态的距离
+          update_state_distance();
+          
+          // 保存新的目标状态至state_targets.txt文件中
+          u8* dir=getenv("TMP_DIR");
+          u8 filename[200];
+          sprintf(filename, "%s/state_targets.txt",dir);
+          FILE *fp = fopen(filename,"a+");
+          if(fp){
+            fprintf(fp,"%llu\n",state_targets[state_targets_count-1]);
+            fclose(fp);
+          }
+        }
+        
+        *target_path = 0;
+        //Free state sequence
+        // 改为全局变量了，所以不释放
+        //if (state_sequence) ck_free(state_sequence);
+      }
+      
+    } else {
+      PFATAL("Unexpected TargetAction: %d", ta);
+    }
+    TOKF("2 Send: %lf %d msg: %s", get_current_time() - bstart_time, n, kl_val(it)->mdata);
+
+    // Allocate memory to store new accumulated response buffer size
+    if (messages_sent * sizeof(u32) >= MAX_ALLOC) {
+        emulate_disconnect();
+        goto HANDLE_RESPONSES;
+    }
+    response_bytes = (u32 *)ck_realloc(response_bytes, messages_sent * sizeof(u32));
+
+    // retrieve server response
+    u32 prev_buf_size = response_buf_size;
+
+    bstart_time = get_current_time();
+    do {
+      if (ta == GetNext)
+        ta = target_will_do();
+
+      if (ta == Send) {
+        ta = GetNext;
+        if (net_recv_sbr(sbr_data_fd, &response_buf, &response_buf_size) < 0) {
+          goto HANDLE_RESPONSES;
+        }
+      } else if (ta == Timeout) {
+        response_bytes[messages_sent - 1] = response_buf_size;
+        if (prev_buf_size == response_buf_size)
+          likely_buggy = 1;
+        else
+          likely_buggy = 0;
+        goto HANDLE_RESPONSES;
+      } else if (ta == Recv) {
+        // Target is ready to accept msgs. Go to next iteration.
+      } else {
+        PFATAL("Unexpected TargetAction: %d", ta);
+      }
+    } while (ta == GetNext);
+    TOKF("3 Recv: %lf %s", get_current_time() - bstart_time, response_buf);
+
+    // Update accumulated response buffer size
+    response_bytes[messages_sent - 1] = response_buf_size;
+
+    // set likely_buggy flag if AFLNet does not receive any feedback from the
+    // server it could be a signal of a potentiall server crash, like the case
+    // of CVE-2019-7314
+    if (prev_buf_size == response_buf_size)
+      likely_buggy = 1;
+    else
+      likely_buggy = 0;
+  }
+
+  // We are done with messages, let's close the connection.
+  if (ta == Recv) {
+    emulate_disconnect();
+  } else {
+    PFATAL("We are exiting with action: %d", ta);
+  }
+
+HANDLE_RESPONSES:
+  // Drain sockets and check for remnants
+  bstart_time = get_current_time();
+  drain_pending_msgs();
+  TOKF("4 Recv: %lf %s", get_current_time() - bstart_time, response_buf);
+
+  if (messages_sent > 0 && response_bytes != NULL) {
+    response_bytes[messages_sent - 1] = response_buf_size;
+  }
+
+  if (likely_buggy && false_negative_reduction)
+    return 0;
+
+  bstart_time = get_current_time();
+  TOKF("5 Kill: %lf\n%s", get_current_time() - bstart_time, response_buf);
+  
+  
+  // aflnet_go
+  // 记录状态转化边的数量
+  unsigned int  path_count, discard;
+  //unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
+  // 从共享内存中提取状态码
+  state_sequence = extract_state_codes(state_sequence, &state_count);
+  
+  // 状态数小于2,不存在状态转换边，直接退出
+  if(state_count < 2){
+    // 改为全局变量了，所以不释放
+    //if (state_sequence) ck_free(state_sequence);
+    return 0;
+  }
+  
+  // 统计每个状态的出度
+  khiter_t h;
+  for (int i=0; i<state_count-1; i++){
+    h = kh_get(hms, khms_states, state_sequence[i]);
+    if (h != kh_end(khms_states)) {
+      kh_val(khms_states, h)->out_degree++;
+    }
+    
+  }
+  
+  
+  u64 *path_ids = get_path_ids(state_sequence, state_count);
+  path_count = state_count-1;
+  
+  khiter_t k;
+  for (int i=0; i<path_count; i++){
+    k = kh_get(hedge, khedge, path_ids[i]);
+    if(k == kh_end(khedge)){
+      k = kh_put(hedge, khedge, path_ids[i], &discard);
+      kh_val(khedge, k) = 1;
+    }
+    else
+      kh_val(khedge, k)++;
+  }
+  
+  // 改为全局变量了，所以不释放
+  //if (state_sequence) ck_free(state_sequence);
+  if (path_ids) ck_free(path_ids);
+  // aflnet_go#
+  
+  return 0;
+}
+
 
 
 /* Send (mutated) messages in order to the server under test */
@@ -1450,6 +1809,7 @@ int send_over_network()
     state_count = 0;
   }
 
+  double bstart_time = get_current_time();
   //Create a TCP/UDP socket
   int sockfd = -1;
   if (net_protocol == PRO_TCP)
@@ -1500,9 +1860,12 @@ int send_over_network()
       return 1;
     }
   }
+  TOKF("1 Conn: %lf", get_current_time() - bstart_time);
 
   //retrieve early server response if needed
+  bstart_time = get_current_time();
   if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) goto HANDLE_RESPONSES;
+  TOKF("1 Recv: %lf %s", get_current_time() - bstart_time, response_buf);
 
   //write the request messages
   kliter_t(lms) *it;
@@ -1516,7 +1879,9 @@ int send_over_network()
 #endif
 
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
+    bstart_time = get_current_time();
     n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
+    TOKF("2 Send: %lf %d msg: %s", get_current_time() - bstart_time, n, kl_val(it)->mdata);
     messages_sent++;
     
     
@@ -1530,9 +1895,11 @@ int send_over_network()
 
     //retrieve server response
     u32 prev_buf_size = response_buf_size;
+    bstart_time = get_current_time();
     if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
       goto HANDLE_RESPONSES;
     }
+    TOKF("3 Recv: %lf %s", get_current_time() - bstart_time, response_buf);
     
     // 从共享内存中提取状态码到全局变量state_sequence，state_count
     state_sequence = extract_state_codes(state_sequence, &state_count);
@@ -1590,8 +1957,10 @@ int send_over_network()
   }
 
 HANDLE_RESPONSES:
-
+  
+  bstart_time = get_current_time();
   net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
+  TOKF("4 Recv: %lf %s", get_current_time() - bstart_time, response_buf);
 
   if (messages_sent > 0 && response_bytes != NULL) {
     response_bytes[messages_sent - 1] = response_buf_size;
@@ -1606,7 +1975,8 @@ HANDLE_RESPONSES:
   close(sockfd);
 
   if (likely_buggy && false_negative_reduction) return 0;
-
+  
+  bstart_time = get_current_time();
   if (terminate_child && (child_pid > 0)) kill(child_pid, SIGTERM);
 
   //give the server a bit more time to gracefully terminate
@@ -1614,7 +1984,7 @@ HANDLE_RESPONSES:
     int status = kill(child_pid, 0);
     if ((status != 0) && (errno == ESRCH)) break;
   }
-  
+  TOKF("5 Kill: %lf", get_current_time() - bstart_time);
   
   // aflnet_go
   // 记录状态转化边的数量
@@ -3441,13 +3811,21 @@ static void move_process_to_netns() {
 EXP_ST void init_forkserver(char** argv) {
 
   static struct itimerval it;
-  int st_pipe[2], ctl_pipe[2];
+  int st_pipe[2], ctl_pipe[2], sbr_data[2], sbr_ctl[2];
   int status;
   s32 rlen;
 
   ACTF("Spinning up the fork server...");
 
   if (pipe(st_pipe) || pipe(ctl_pipe)) PFATAL("pipe() failed");
+  
+  if (socketpair(AF_LOCAL, SOCK_SEQPACKET, 0, sbr_data) != 0) {
+    PFATAL("socketpair() failed");
+  }
+  if (socketpair(AF_LOCAL, SOCK_SEQPACKET, 0, sbr_ctl) != 0) {
+    PFATAL("socketpair() failed");
+  }
+
 
   forksrv_pid = fork();
 
@@ -3493,7 +3871,10 @@ EXP_ST void init_forkserver(char** argv) {
 
     r.rlim_max = r.rlim_cur = 0;
 
+#ifdef CORE_BENCH
+#else
     setrlimit(RLIMIT_CORE, &r); /* Ignore errors */
+#endif
 
     /* Move the process to the different namespace. */
 
@@ -3506,7 +3887,10 @@ EXP_ST void init_forkserver(char** argv) {
     setsid();
 
     dup2(dev_null_fd, 1);
+#ifdef CORE_BENCH
+#else
     dup2(dev_null_fd, 2);
+#endif
 
     if (out_file) {
 
@@ -3524,11 +3908,23 @@ EXP_ST void init_forkserver(char** argv) {
     if (dup2(ctl_pipe[0], FORKSRV_FD) < 0) PFATAL("dup2() failed");
     if (dup2(st_pipe[1], FORKSRV_FD + 1) < 0) PFATAL("dup2() failed");
 
+    // Setup communication with SaBRe.
+    if (dup2(sbr_data[1], SABRE_DATA_SOCKET) != SABRE_DATA_SOCKET) {
+      PFATAL("dup2() failed");
+    }
+    if (dup2(sbr_ctl[1], SABRE_CTL_SOCKET) != SABRE_CTL_SOCKET) {    
+      PFATAL("dup2() failed");    
+    }    
+
     close(ctl_pipe[0]);
     close(ctl_pipe[1]);
     close(st_pipe[0]);
     close(st_pipe[1]);
-
+    close(sbr_data[0]);
+    close(sbr_data[1]);
+    close(sbr_ctl[0]);
+    close(sbr_ctl[1]);   
+ 
     close(out_dir_fd);
     close(dev_null_fd);
     close(dev_urandom_fd);
@@ -3569,9 +3965,30 @@ EXP_ST void init_forkserver(char** argv) {
 
   close(ctl_pipe[0]);
   close(st_pipe[1]);
+  sbr_data_fd_target = sbr_data[1];
+  sbr_ctl_fd_target = sbr_ctl[1];
+
+  sbr_data_fd = sbr_data[0];
+  sbr_ctl_fd = sbr_ctl[0];
 
   fsrv_ctl_fd = ctl_pipe[1];
   fsrv_st_fd  = st_pipe[0];
+  
+  if (sbr_mode) {
+    char rsp[1024] = {0};
+    char expected[] = "hello from sbr";
+    int rc = recv(sbr_ctl_fd, rsp, 1024, 0);
+    if (strncmp(rsp, expected, sizeof(expected)) != 0 || rc != sizeof(expected))
+      PFATAL("sbr recv failed");
+
+    char msg[] = "hello from afl";
+    rc = send(sbr_ctl_fd, msg, sizeof(msg), MSG_NOSIGNAL);
+    if (rc != sizeof(msg))
+      PFATAL("sbr send failed");
+
+    OKF("SaBRe handshake OK!");
+  }
+
 
   /* Wait for the fork server to come up, but don't wait too long. */
 
@@ -3872,11 +4289,23 @@ static u8 run_target(char** argv, u32 timeout) {
   /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
 
   if (dumb_mode == 1 || no_forkserver) {
-    if (use_net) send_over_network();
+    if (sbr_mode) {
+      send_over_network_sbr();
+    } else if (use_net) {
+      send_over_network();
+    }
     if (waitpid(child_pid, &status, 0) <= 0) PFATAL("waitpid() failed");
 
   } else {
-    if (use_net) send_over_network();
+    if (sbr_mode) {
+      double bstart_time = get_current_time();
+      send_over_network_sbr();
+      TOKF("0 Total: %lf", get_current_time() - bstart_time);
+    } else if (use_net) {
+      double bstart_time = get_current_time();
+      send_over_network();
+      TOKF("0 Total: %lf", get_current_time() - bstart_time);
+    }
     s32 res;
 
     if ((res = read(fsrv_st_fd, &status, 4)) != 4) {
@@ -3900,6 +4329,18 @@ static u8 run_target(char** argv, u32 timeout) {
   setitimer(ITIMER_REAL, &it, NULL);
 
   total_execs++;
+#ifdef LONG_BENCH
+#elif SHORT_BENCH
+  if (total_execs == 1000) {
+    OKF("Snapfuzz-bench: Done!");
+    raise(SIGINT);
+  }
+#else
+  if (total_execs == 1000000) {
+    OKF("Snapfuzz-bench: Done!");
+    raise(SIGINT);
+  }
+#endif
 
   /* Any subsequent operations on trace_bits must not be moved by the
      compiler below this point. Past this location, trace_bits[] behave
@@ -3926,6 +4367,10 @@ static u8 run_target(char** argv, u32 timeout) {
     if (child_timed_out && kill_signal == SIGKILL) return FAULT_TMOUT;
 
     if (kill_signal == SIGTERM) return FAULT_NONE;
+    
+#ifdef CORE_BENCH
+    WARNF("Snapfuzz crashed? %d", kill_signal);
+#endif
 
     return FAULT_CRASH;
 
@@ -4943,7 +5388,7 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              "exec_timeout      : %u\n" /* Must match find_timeout() */
              "afl_banner        : %s\n"
              "afl_version       : " VERSION "\n"
-             "target_mode       : %s%s%s%s%s%s%s\n"
+             "target_mode       : %s%s%s%s%s%s%s%s\n"
              "command_line      : %s\n"
              "slowest_exec_ms   : %llu\n",
              start_time / 1000, get_cur_time() / 1000, getpid(),
@@ -4954,10 +5399,10 @@ static void write_stats_file(double bitmap_cvg, double stability, double eps) {
              unique_hangs, last_path_time / 1000, last_crash_time / 1000,
              last_hang_time / 1000, total_execs - last_crash_execs,
              exec_tmout, use_banner,
-             qemu_mode ? "qemu " : "", dumb_mode ? " dumb " : "",
+             qemu_mode ? "qemu " : "", sbr_mode ? "sabre " : "", dumb_mode ? " dumb " : "",
              no_forkserver ? "no_forksrv " : "", crash_mode ? "crash " : "",
              persistent_mode ? "persistent " : "", deferred_mode ? "deferred " : "",
-             (qemu_mode || dumb_mode || no_forkserver || crash_mode ||
+             (qemu_mode || sbr_mode || dumb_mode || no_forkserver || crash_mode ||
               persistent_mode || deferred_mode) ? "" : "default",
              orig_cmdline, slowest_exec_ms);
              /* ignore errors */
@@ -8485,8 +8930,9 @@ static void handle_stop_sig(int sig) {
 
   stop_soon = 1;
 
+  if (child_pid > 0) kill(-child_pid, SIGKILL);
   if (child_pid > 0) kill(child_pid, SIGKILL);
-  if (forksrv_pid > 0) kill(forksrv_pid, SIGKILL);
+  if (forksrv_pid > 0) kill(-forksrv_pid, SIGKILL);
 
 }
 
@@ -8506,12 +8952,13 @@ static void handle_timeout(int sig) {
   if (child_pid > 0) {
 
     child_timed_out = 1;
+    kill(-child_pid, SIGKILL);
     kill(child_pid, SIGKILL);
 
   } else if (child_pid == -1 && forksrv_pid > 0) {
 
     child_timed_out = 1;
-    kill(forksrv_pid, SIGKILL);
+    kill(-forksrv_pid, SIGKILL);
 
   }
 
@@ -8670,7 +9117,7 @@ EXP_ST void check_binary(u8* fname) {
 
   }
 
-  if (memmem(f_data, f_len, DEFER_SIG, strlen(DEFER_SIG) + 1)) {
+  if (memmem(f_data, f_len, DEFER_SIG, strlen(DEFER_SIG) + 1) || sbr_mode) {
 
     OKF(cPIN "Deferred forkserver binary detected.");
     setenv(DEFER_ENV_VAR, "1", 1);
@@ -9361,6 +9808,19 @@ EXP_ST void setup_signal_handlers(void) {
 
 }
 
+/* Rewrite argv for SaBRe. */
+
+static char** get_sbr_argv(char** argv, int argc) {
+  char** new_argv = ck_alloc(sizeof(char*) * (argc + 3 + 1));
+
+  memcpy(new_argv + 3, argv, sizeof(char*) * argc);
+
+  new_argv[2] = "--";
+  new_argv[1] = sbr_plugin_path;
+  target_path = new_argv[0] = ck_strdup("./sabre");
+
+  return new_argv;
+}
 
 /* Rewrite argv for QEMU. */
 
@@ -9576,7 +10036,7 @@ int main(int argc, char** argv) {
 //aflnet_go
 //  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QN:D:W:w:e:P:KEq:s:RFc:l:")) > 0)
 //  param b is AFLGO's c
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Qz:b:N:D:W:w:e:P:KEq:s:RFc:l:U:")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Qz:b:N:A:D:W:w:e:P:KEq:s:RFc:l:U:")) > 0)
 //aflnet_go#
     switch (opt) {
 
@@ -9655,6 +10115,14 @@ int main(int argc, char** argv) {
       case 'U':
          if(sscanf(optarg, "%lu", &cpu_start) < 1) FATAL("Bad syntax used for -U");
       break;
+      
+      case 'A': /* SaBRe mode */
+        if (sbr_mode) FATAL("Multiple -A options not supported");
+        sbr_plugin_path = optarg;
+
+        sbr_mode = 1;
+        break;
+
 
       case 'm': { /* mem limit */
 
@@ -9933,7 +10401,7 @@ int main(int argc, char** argv) {
 //aflnet_go#
 
   //AFLNet - Check for required arguments
-  if (!use_net) FATAL("Please specify network information of the server under test (e.g., tcp://127.0.0.1/8554)");
+  if (!use_net && !sbr_mode) FATAL("Please specify network information of the server under test (e.g., tcp://127.0.0.1/8554)");
 
   if (!protocol_selected) FATAL("Please specify the protocol to be tested using the -P option");
 
@@ -9990,7 +10458,10 @@ int main(int argc, char** argv) {
   get_core_count();
 
 #ifdef HAVE_AFFINITY
-  bind_to_free_cpu();
+#ifdef NOAFFIN_BENCH
+#else
+   bind_to_free_cpu();
+#endif
 #endif /* HAVE_AFFINITY */
 
   check_crash_handling();
@@ -10020,12 +10491,19 @@ int main(int argc, char** argv) {
 
   start_time = get_cur_time();
 
-  if (qemu_mode)
+  if (sbr_mode)
+    use_argv = get_sbr_argv(argv + optind, argc - optind);
+  else if (qemu_mode)
     use_argv = get_qemu_argv(argv[0], argv + optind, argc - optind);
   else
     use_argv = argv + optind;
 
   perform_dry_run(use_argv);
+
+#ifdef PRINT_BENCH
+  TOKF("Snapfuzz-bench-print: Done!");
+  raise(SIGINT);
+#endif
 
   cull_queue();
 
@@ -10172,8 +10650,9 @@ int main(int argc, char** argv) {
   /* If we stopped programmatically, we kill the forkserver and the current runner.
      If we stopped manually, this is done by the signal handler. */
   if (stop_soon == 2) {
+      if (child_pid > 0) kill(-child_pid, SIGKILL);
       if (child_pid > 0) kill(child_pid, SIGKILL);
-      if (forksrv_pid > 0) kill(forksrv_pid, SIGKILL);
+      if (forksrv_pid > 0) kill(-forksrv_pid, SIGKILL);
   }
   /* Now that we've killed the forkserver, we wait for it to be able to get rusage stats. */
   if (waitpid(forksrv_pid, NULL, 0) <= 0) {

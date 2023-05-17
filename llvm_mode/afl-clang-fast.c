@@ -227,6 +227,8 @@ static void edit_params(u32 argc, char** argv) {
     cc_params[cc_par_cnt++] = "-funroll-loops";
 
   }
+  // TODO: Should we replace this with --dynamic-list?
+  cc_params[cc_par_cnt++] = "-rdynamic";
 
   if (getenv("AFL_NO_BUILTIN")) {
 
