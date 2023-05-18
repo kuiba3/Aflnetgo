@@ -8,7 +8,7 @@
 
 #define server_wait_usecs 10000
 
-unsigned int* (*extract_response_codes)(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref) = NULL;
+u64* (*extract_response_codes)(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref) = NULL;
 
 char *get_test_case(char* packet_file, int *fsize)
 {

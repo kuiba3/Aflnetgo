@@ -332,13 +332,6 @@ static const double INF = 10000000000000;
 static double max_state_distance = -1.0;
 static double min_state_distance = -1.0;
 
-enum {
-  /* 0 */ RESPONSE_CODE,
-  /* 1 */ ENUM_VALUE
-};
-
-u8 state_mode = RESPONSE_CODE;
-
 // 逆邻接表的数据结构
 typedef struct state_edge{
   u64 state_id;
@@ -480,7 +473,7 @@ khash_t(hedge) *khedge;
 kliter_t(lms) *M2_prev, *M2_next;
 
 //Function pointers pointing to Protocol-specific functions
-u64* (*extract_response_codes)(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref) = NULL;
+unsigned int* (*extract_response_codes)(unsigned char* buf, unsigned int buf_size, unsigned int* state_count_ref) = NULL;
 region_t* (*extract_requests)(unsigned char* buf, unsigned int buf_size, unsigned int* region_count_ref) = NULL;
 
 /* Initialize the implemented state machine as a graphviz graph */
@@ -620,30 +613,16 @@ void update_region_annotations(struct queue_entry* q)
 {
   u32 i = 0;
   
-  if (state_mode == RESPONSE_CODE){
-    for (i = 0; i < messages_sent; i++) {
-      if ((response_bytes[i] == 0) || ( i > 0 && (response_bytes[i] - response_bytes[i - 1] == 0))) {
-        q->regions[i].state_sequence = NULL;
-        q->regions[i].state_count = 0;
-      } else {
-        unsigned int state_count;
-        q->regions[i].state_sequence = (*extract_response_codes)(response_buf, response_bytes[i], &state_count);
-        q->regions[i].state_count = state_count;
-      }
+  for (i = 0; i < messages_sent; i++) {
+    
+    // 从全局变量state_sequence中提取状态队列    
+    q->regions[i].state_sequence = (u64 *)ck_realloc(q->regions[i].state_sequence,  (i+2)* sizeof(u64));
+    for(u32 j=0; j<i+2; j++){
+      q->regions[i].state_sequence[j] = state_sequence[j];
     }
+    q->regions[i].state_count = i+2;
+    
   }
-  else if (state_mode == ENUM_VALUE){
-    for (i = 0; i < messages_sent; i++) {
-      // 从全局变量state_sequence中提取状态队列    
-      q->regions[i].state_sequence = (u64 *)ck_realloc(q->regions[i].state_sequence,  (i+2)* sizeof(u64));
-      for(u32 j=0; j<i+2; j++){
-        q->regions[i].state_sequence[j] = state_sequence[j];
-      }
-      q->regions[i].state_count = i+2;
-      
-    }
-  }
-  
 }
 
 /* Choose a region data for region-level mutations */
@@ -681,12 +660,9 @@ u8* choose_source_region(u32 *out_len) {
 /* Update #fuzzs visiting a specific state */
 void update_fuzzs() {
   unsigned int i, discard;
-  
-  if (state_mode == RESPONSE_CODE){
-    if (state_sequence) ck_free(state_sequence);
-    state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
-  }
-  
+  //unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
+  // 已经从共享内存中提取状态码到全局变量state_sequence
+
   //A hash set is used so that the #paths is not updated more than once for one specific state
   khash_t(hs64) *khs_state_ids;
   khint_t k;
@@ -1189,11 +1165,9 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
   int has_new_edge = 0;
 
   if (!response_buf_size || !response_bytes) return;
-  
-  if (state_mode == RESPONSE_CODE){
-    if (state_sequence) ck_free(state_sequence);
-    state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
-  }
+
+  //unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
+  // 已经从共享内存中提取状态码到全局变量state_sequence
 
   q->unique_state_count = get_unique_state_count(state_sequence, state_count);
 
@@ -1633,19 +1607,12 @@ int send_over_network_sbr() {
       messages_sent++;
       
       // 从共享内存中提取状态码到全局变量state_sequence，state_count
-      if (state_mode == ENUM_VALUE)
-        state_sequence = extract_state_codes(state_sequence, &state_count);
-
+      state_sequence = extract_state_codes(state_sequence, &state_count);
       
       //判断共享内存中运行到目标代码的标记是否不为0，不为0则把上一个状态作为目标状态加入队列
       if(*target_path > 0){
-        //unsigned int state_count; 
-        // 如果是RESPONSE_CODE模式，从响应码中提取状态码
-        if (state_mode == RESPONSE_CODE){
-          if (state_sequence) ck_free(state_sequence);
-          state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
-        }
-
+        //unsigned int state_count;
+        //unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);      
         
         int has_new_targetstate = 0;
         // 取state_count>2是因为不取状态0，假如返回状态是0,a,b,此时取目标状态为a,
@@ -1680,12 +1647,8 @@ int send_over_network_sbr() {
         
         *target_path = 0;
         //Free state sequence
-        if (state_mode == RESPONSE_CODE){
-          if (state_sequence) ck_free(state_sequence);
-          state_sequence = NULL;
-          state_count = 0;
-        }
-
+        // 改为全局变量了，所以不释放
+        //if (state_sequence) ck_free(state_sequence);
       }
       
     } else {
@@ -1769,14 +1732,7 @@ HANDLE_RESPONSES:
   unsigned int  path_count, discard;
   //unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
   // 从共享内存中提取状态码
-  if (state_mode == ENUM_VALUE)
-    state_sequence = extract_state_codes(state_sequence, &state_count);
-  // 从响应码中提取状态码
-  else if (state_mode == RESPONSE_CODE){
-    if (state_sequence) ck_free(state_sequence);
-    state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
-  }
-
+  state_sequence = extract_state_codes(state_sequence, &state_count);
   
   // 状态数小于2,不存在状态转换边，直接退出
   if(state_count < 2){
@@ -1946,8 +1902,7 @@ int send_over_network()
     TOKF("3 Recv: %lf %s", get_current_time() - bstart_time, response_buf);
     
     // 从共享内存中提取状态码到全局变量state_sequence，state_count
-    if (state_mode == ENUM_VALUE)
-      state_sequence = extract_state_codes(state_sequence, &state_count);
+    state_sequence = extract_state_codes(state_sequence, &state_count);
 
     //Update accumulated response buffer size
     response_bytes[messages_sent - 1] = response_buf_size;
@@ -1960,12 +1915,7 @@ int send_over_network()
     //判断共享内存中运行到目标代码的标记是否不为0，不为0则把上一个状态作为目标状态加入队列
     if(*target_path > 0){
       //unsigned int state_count;
-      
-      // 如果是RESPONSE_CODE模式，从响应码中提取状态码
-      if (state_mode == RESPONSE_CODE){
-        if (state_sequence) ck_free(state_sequence); 
-        state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
-      }    
+      //unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);      
       
       int has_new_targetstate = 0;
       // 取state_count>2是因为不取状态0，假如返回状态是0,a,b,此时取目标状态为a,
@@ -2000,14 +1950,9 @@ int send_over_network()
       
       *target_path = 0;
       //Free state sequence
-      
-      if (state_mode == RESPONSE_CODE){
-        if (state_sequence) ck_free(state_sequence);
-        state_sequence = NULL;
-        state_count = 0;        
-      }
+      // 改为全局变量了，所以不释放
+      //if (state_sequence) ck_free(state_sequence);
     }
-    
     
   }
 
@@ -2046,13 +1991,7 @@ HANDLE_RESPONSES:
   unsigned int  path_count, discard;
   //unsigned int *state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
   // 从共享内存中提取状态码
-  if (state_mode == ENUM_VALUE)
-    state_sequence = extract_state_codes(state_sequence, &state_count);
-  // 从响应码中提取状态码
-  else if (state_mode == RESPONSE_CODE){
-    if (state_sequence) ck_free(state_sequence); 
-    state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
-  }
+  state_sequence = extract_state_codes(state_sequence, &state_count);
   
   // 状态数小于2,不存在状态转换边，直接退出
   if(state_count < 2){
@@ -9321,8 +9260,6 @@ static void usage(u8* argv0) {
        "  -T text       - text banner to show on the screen\n"
        "  -M / -S id    - distributed mode (see parallel_fuzzing.txt)\n"
        "  -C            - crash exploration mode (the peruvian rabbit thing)\n\n"
-       "  -U core_id    - Starting number of CPU binding\n\n"
-       "  -Z            - Use enum value as state id\n\n"
 
        "For additional tips, please consult %s/README.\n\n",
 
@@ -10099,7 +10036,7 @@ int main(int argc, char** argv) {
 //aflnet_go
 //  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QN:D:W:w:e:P:KEq:s:RFc:l:")) > 0)
 //  param b is AFLGO's c
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Qz:b:N:A:D:W:w:e:P:KEq:s:RFZc:l:U:")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Qz:b:N:A:D:W:w:e:P:KEq:s:RFc:l:U:")) > 0)
 //aflnet_go#
     switch (opt) {
 
@@ -10176,11 +10113,7 @@ int main(int argc, char** argv) {
 
       }
       case 'U':
-          if(sscanf(optarg, "%lu", &cpu_start) < 1) FATAL("Bad syntax used for -U");
-      break;
-      
-      case 'Z':
-          state_mode = ENUM_VALUE;
+         if(sscanf(optarg, "%lu", &cpu_start) < 1) FATAL("Bad syntax used for -U");
       break;
       
       case 'A': /* SaBRe mode */
