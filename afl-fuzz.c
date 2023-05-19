@@ -1007,13 +1007,7 @@ u64 update_scores_and_select_next_state(u8 mode) {
       state->score = ceil(1000 * pow(2, -log10(log10(state->fuzzs + 1) * state->selected_times + 1)) * pow(2, log(state->paths_discovered + 1)));
       //aflnet_go
       if (state_targets){
-        // 每fuzz 10000个种子，更新一次状态距离
-        if (state_favor_count % 10000 == 0){
-          update_state_distance();
-          state_favor_count++;
-        }
-        
-        
+            
         double normalized_ds = 0;
         if (max_state_distance != min_state_distance)
           normalized_ds = (state->distance_to_target_state- min_state_distance) / (max_state_distance - min_state_distance);
@@ -10637,6 +10631,8 @@ int main(int argc, char** argv) {
       }
 
       skipped_fuzz = fuzz_one(use_argv);
+      if (!skipped_fuzz)
+        update_state_distance();
 
       if (!stop_soon && sync_id && !skipped_fuzz) {
 
