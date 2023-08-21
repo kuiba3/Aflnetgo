@@ -274,6 +274,12 @@ struct queue_entry {
       favored,                        /* Currently favored?               */
       fs_redundant;                   /* Marked as redundant in the fs?   */
 
+// aflnet_go
+  u8 was_exec_target;             /* 表示当前种子执行能运行到目标位置 */
+  key_region *key_regions;
+  u32 key_regions_count;
+// aflnet_go #
+
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
       exec_cksum;                     /* Checksum of the execution trace  */
 
@@ -325,6 +331,9 @@ static double cur_distance = -1.0;     /* Distance of executed input       */
 static double max_distance = -1.0;     /* Maximal distance for any input   */
 static double min_distance = -1.0;     /* Minimal distance for any input   */
 static u32 t_x = 10;                  /* Time to exploitation (Default: 10 min) */
+
+u8 cur_testcase_exec_target = 0;
+u8 was_add_queue = 0;               /* 表示调用了add_to_queue函数*/
 
 //#define INF 4294967295
 static const double INF = 10000000000000;
@@ -1601,9 +1610,9 @@ int send_over_network_sbr() {
 
   // 获取运行到目标代码的标记地址
 #ifdef WORD_SIZE_64
-  u64* target_path = (u64*) (trace_bits + MAP_SIZE + 16);
+  u64* count_target_execute = (u64*) (trace_bits + MAP_SIZE + 16);
 #else
-  u32* target_path = (u32*)(trace_bits + MAP_SIZE + 8);
+  u32* count_target_execute = (u32*)(trace_bits + MAP_SIZE + 8);
 #endif
 
   // write the request messages
@@ -1632,7 +1641,7 @@ int send_over_network_sbr() {
 
       
       //判断共享内存中运行到目标代码的标记是否不为0，不为0则把上一个状态作为目标状态加入队列
-      if(*target_path > 0){
+      if(*count_target_execute > 0){
         //unsigned int state_count; 
         // 如果是RESPONSE_CODE模式，从响应码中提取状态码
         if (state_mode == RESPONSE_CODE){
@@ -1640,7 +1649,7 @@ int send_over_network_sbr() {
           state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
         }
 
-        
+        cur_testcase_exec_target = 1;
         int has_new_targetstate = 0;
         // 取state_count>2是因为不取状态0，假如返回状态是0,a,b,此时取目标状态为a,
         if(state_count>2){
@@ -1672,7 +1681,7 @@ int send_over_network_sbr() {
           }
         }
         
-        *target_path = 0;
+        *count_target_execute = 0;
         //Free state sequence
         if (state_mode == RESPONSE_CODE){
           if (state_sequence) ck_free(state_sequence);
@@ -1911,9 +1920,9 @@ int send_over_network()
 
   // 获取运行到目标代码的标记地址
 #ifdef WORD_SIZE_64
-  u64* target_path = (u64*) (trace_bits + MAP_SIZE + 16);
+  u64* count_target_execute = (u64*) (trace_bits + MAP_SIZE + 16);
 #else
-  u32* target_path = (u32*)(trace_bits + MAP_SIZE + 8);
+  u32* count_target_execute = (u32*)(trace_bits + MAP_SIZE + 8);
 #endif
 
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
@@ -1952,7 +1961,7 @@ int send_over_network()
     else likely_buggy = 0;
     
     //判断共享内存中运行到目标代码的标记是否不为0，不为0则把上一个状态作为目标状态加入队列
-    if(*target_path > 0){
+    if(*count_target_execute > 0){
       //unsigned int state_count;
       
       // 如果是RESPONSE_CODE模式，从响应码中提取状态码
@@ -1961,6 +1970,7 @@ int send_over_network()
         state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
       }    
       
+      cur_testcase_exec_target = 1;
       int has_new_targetstate = 0;
       // 取state_count>2是因为不取状态0，假如返回状态是0,a,b,此时取目标状态为a,
       if(state_count>2){
@@ -1992,7 +2002,7 @@ int send_over_network()
         }
       }
       
-      *target_path = 0;
+      *count_target_execute = 0;
       //Free state sequence
       
       if (state_mode == RESPONSE_CODE){
@@ -2558,7 +2568,11 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
   q->unique_state_count = 0;
   
 //aflnet_go
+  q->key_regions = NULL;
+  q->key_regions_count = 0;
+
   q->distance = cur_distance;
+
   if (cur_distance > 0) {
 
     if (max_distance <= 0) {
@@ -2569,6 +2583,14 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
     if (cur_distance < min_distance) min_distance = cur_distance;
 
   }  
+
+  if (cur_testcase_exec_target) {
+      q->was_exec_target = 1;
+  }
+  else
+      q->was_exec_target = 0;
+
+  was_add_queue = 1;
 //aflnet_go#
 
   if (q->depth > max_depth) max_depth = q->depth;
@@ -4218,6 +4240,7 @@ static u8 run_target(char** argv, u32 timeout) {
 //aflnet_go
 //  memset(trace_bits, 0, MAP_SIZE);
   memset(trace_bits, 0, MAP_SIZE + 32);
+  cur_testcase_exec_target = 0;
 //aflnet_go#  
 
   MEM_BARRIER();
@@ -5101,6 +5124,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u8  hnb;
   //s32 fd;
   u8  keeping = 0, res;
+
+  was_add_queue = 0;
 
   if (fault == crash_mode) {
 
@@ -7009,6 +7034,179 @@ static u8 could_be_interest(u32 old_val, u32 new_val, u8 blen, u8 check_le) {
 
 }
 
+/* 把关键字节区间加入到种子的关键字节区间队列中 */
+void insert_key_region(struct queue_entry* queue, int start, int end, double P){
+  key_region *new_key_region = (key_region*) ck_alloc(sizeof(key_region));
+  new_key_region->start_byte = start;
+  new_key_region->end_byte = end;
+  new_key_region->P = P;
+  new_key_region->next = NULL;
+  
+  key_region *tmp_key_region = queue->key_regions;
+  
+  if (tmp_key_region == NULL || new_key_region->start_byte < tmp_key_region->start_byte){
+    new_key_region->next = tmp_key_region;
+    queue->key_regions = new_key_region;
+    
+    if (tmp_key_region)
+      new_key_region->gap_to_next = tmp_key_region->start_byte - new_key_region->end_byte;
+    
+  }
+  else{
+    while(tmp_key_region->next && new_key_region->start_byte > tmp_key_region->next->start_byte)
+      tmp_key_region = tmp_key_region->next;
+    
+    new_key_region->next = tmp_key_region->next;
+    tmp_key_region->next = new_key_region;
+    
+    tmp_key_region->gap_to_next = new_key_region->start_byte - tmp_key_region->end_byte;
+    if (new_key_region->next)
+      new_key_region->gap_to_next = new_key_region->next->start_byte - new_key_region->end_byte;
+  }
+  queue->key_regions_count ++;
+    
+}
+
+/* 检查关键字节区间数是否超过MAX_KEY_REGIONS_COUNT个，超过的话对概率0.5以下的删除，再合并区间距离最近
+   的一些区间*/
+void merge_key_regions(struct queue_entry* queue){
+  key_region *tmp_key_region = queue->key_regions;
+  key_region *delete_region;
+  if (queue->key_regions_count > MAX_KEY_REGIONS_COUNT){
+    while (tmp_key_region->next){
+      if (tmp_key_region->next->P < 0.5){
+        delete_region = tmp_key_region->next;
+        tmp_key_region->next = delete_region->next;
+        if (delete_region->next)
+          tmp_key_region->gap_to_next = delete_region->next->start_byte - tmp_key_region->end_byte;
+        
+        ck_free(delete_region);
+        queue->key_regions_count --;
+        continue;
+      }
+      tmp_key_region = tmp_key_region->next;
+    }
+    tmp_key_region = queue->key_regions;
+    if (tmp_key_region->P < 0.5){
+      queue->regions = tmp_key_region->next;
+      ck_free(tmp_key_region);
+      queue->key_regions_count --;
+    }
+  }
+  
+  key_region *nextmerge_key_region;
+  while (queue->key_regions_count > MAX_KEY_REGIONS_COUNT){
+    tmp_key_region = queue->key_regions;
+    nextmerge_key_region = tmp_key_region;
+    while(tmp_key_region->next){
+      if (nextmerge_key_region->gap_to_next > tmp_key_region->gap_to_next)
+        nextmerge_key_region = tmp_key_region;
+      tmp_key_region = tmp_key_region->next;
+    }
+    
+    delete_region = nextmerge_key_region->next;
+    nextmerge_key_region->end_byte = delete_region->end_byte;
+    nextmerge_key_region->gap_to_next = delete_region->gap_to_next;
+    if (nextmerge_key_region->P < delete_region->P)
+      nextmerge_key_region->P = delete_region->P;
+    nextmerge_key_region->next = delete_region->next;
+    ck_free(delete_region);
+    queue->key_regions_count --;
+  }
+}
+
+
+/* 判断是否在上一次testcase是否触发了目标且加入了种子队列，如果是，
+   计算M2变异前后的byte改变的区间，把区间写入新加入种子队列的种子的信息表中，指针queue_top指向最后加入的种子*/
+u8 find_key_bytes(u32 M2_start_byte, u8* in_buf, u32 in_buf_size, u8* out_buf, u32 out_buf_size) {
+  
+    /* 种子生成的输入触发了目标，且加入队列 */
+    if (was_add_queue) {
+        /* 如果是从有关键字节区间的种子变异得到的，先继承父种子的关键字节区间 */
+        if(cur_testcase_exec_target && queue_cur->was_exec_target){
+          key_region *tmp_key_region = queue_cur->key_regions;
+          while(tmp_key_region){
+            insert_key_region(queue_top, tmp_key_region->start_byte, tmp_key_region->end_byte, tmp_key_region->P * P_REDUCE);
+            
+            tmp_key_region = tmp_key_region->next;
+          }
+          
+        }
+      
+        u32 start = 0, end = 0;
+        u8 in_finding = 0; 
+
+        u32 min_len = 0, max_len = 0;
+        if (in_buf_size > out_buf_size) {
+            max_len = in_buf_size;
+            min_len = out_buf_size;
+        }
+        else {
+            max_len = out_buf_size;
+            min_len = in_buf_size;
+        }
+        
+        u32 i = 0;
+        while(i<min_len){
+          if (in_finding == 0){
+            if (in_buf[i] != out_buf[i]){
+              start = i;
+              in_finding = 1;
+            }
+          }
+          else{
+            if(in_buf[i] == out_buf){
+              end = i-1;
+              if(cur_testcase_exec_target)
+                insert_key_region(queue_top, start+M2_start_byte, end+M2_start_byte, 1.0);
+              else
+                insert_key_region(queue_cur, start+M2_start_byte, end+M2_start_byte, 1.0);
+              start = end = 0;
+              in_finding = 0;
+            }
+            
+          }
+          i++;
+ 
+        }
+        if (cur_testcase_exec_target){
+          if (start > 0)
+            insert_key_region(queue_top, start+M2_start_byte, max_len-1+M2_start_byte, 1.0);
+          else if(min_len < max_len)
+            insert_key_region(queue_top, min_len+M2_start_byte, max_len-1+M2_start_byte, 1.0); 
+          
+          merge_key_regions(queue_top);
+        }
+        else{
+          if (start > 0)
+            insert_key_region(queue_cur, start+M2_start_byte, max_len-1+M2_start_byte, 1.0);
+          else if(min_len < max_len)
+            insert_key_region(queue_cur, min_len+M2_start_byte, max_len-1+M2_start_byte, 1.0); 
+          
+          merge_key_regions(queue_cur);
+        }
+        return 1;
+    }
+    
+    return 0;    
+
+}
+
+/* 如果num在关键字节区间里，有tmp_key_region->P的概率认为其在关键字节区间里 */
+u8 check_in_key_regions(struct queue_entry* queue, u32 num){
+  key_region *tmp_key_region = queue->key_regions;
+  while(tmp_key_region){
+    if (tmp_key_region->start_byte <= num && tmp_key_region->end_byte >= num){
+      if (UR(100) < tmp_key_region->P *100)
+        return 1; 
+      else
+        return 0;      
+    }
+    tmp_key_region = tmp_key_region->next;
+  }
+  return 0;
+}
+
 
 /* Take the current entry from the queue, fuzz it for a while. This
    function is a tad too long... returns 0 if fuzzed successfully, 1 if
@@ -7081,6 +7279,7 @@ AFLNET_REGIONS_SELECTION:;
   cur_depth = queue_cur->depth;
 
   u32 M2_start_region_ID = 0, M2_region_count = 0;
+  u32 M2_start_byte = 0;
   /* Identify the prefix M1, the candidate subsequence M2, and the suffix M3. See AFLNet paper */
   /* In this implementation, we only need to indentify M2_start_region_ID which is the first region of M2
   and M2_region_count which is the total number of regions in M2. How the information is identified is
@@ -7138,6 +7337,7 @@ AFLNET_REGIONS_SELECTION:;
     M2_region_count = UR(total_region - M2_start_region_ID);
     if (M2_region_count == 0) M2_region_count++; //Mutate one region at least
   }
+  M2_start_byte = queue_cur->regions[M2_start_region_ID].start_byte;
 
   /* Construct the kl_messages linked list and identify boundary pointers (M2_prev and M2_next) */
   kl_messages = construct_kl_messages(queue_cur->fname, queue_cur->regions, queue_cur->region_count);
@@ -7199,13 +7399,15 @@ AFLNET_REGIONS_SELECTION:;
      testing in earlier, resumed runs (passed_det). */
 
   if (skip_deterministic || queue_cur->was_fuzzed || queue_cur->passed_det)
-    goto havoc_stage;
+    //goto havoc_stage;
+    goto key_bytes_stage;
 
   /* Skip deterministic fuzzing if exec path checksum puts this out of scope
      for this master instance. */
 
   if (master_max && (queue_cur->exec_cksum % master_max) != master_id - 1)
-    goto havoc_stage;
+    //goto havoc_stage;
+    goto key_bytes_stage;
 
   doing_det = 1;
 
@@ -7238,7 +7440,8 @@ AFLNET_REGIONS_SELECTION:;
     FLIP_BIT(out_buf, stage_cur);
 
     if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
-
+    find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
+    
     FLIP_BIT(out_buf, stage_cur);
 
     /* While flipping the least significant bit in every byte, pull of an extra
@@ -7331,6 +7534,7 @@ AFLNET_REGIONS_SELECTION:;
     FLIP_BIT(out_buf, stage_cur + 1);
 
     if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+    find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
 
     FLIP_BIT(out_buf, stage_cur);
     FLIP_BIT(out_buf, stage_cur + 1);
@@ -7360,6 +7564,7 @@ AFLNET_REGIONS_SELECTION:;
     FLIP_BIT(out_buf, stage_cur + 3);
 
     if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+    find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
 
     FLIP_BIT(out_buf, stage_cur);
     FLIP_BIT(out_buf, stage_cur + 1);
@@ -7412,6 +7617,7 @@ AFLNET_REGIONS_SELECTION:;
     out_buf[stage_cur] ^= 0xFF;
 
     if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+    find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
 
     /* We also use this stage to pull off a simple trick: we identify
        bytes that seem to have no effect on the current execution path
@@ -7490,6 +7696,7 @@ AFLNET_REGIONS_SELECTION:;
     *(u16*)(out_buf + i) ^= 0xFFFF;
 
     if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+    find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
     stage_cur++;
 
     *(u16*)(out_buf + i) ^= 0xFFFF;
@@ -7527,6 +7734,7 @@ AFLNET_REGIONS_SELECTION:;
     *(u32*)(out_buf + i) ^= 0xFFFFFFFF;
 
     if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+    find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
     stage_cur++;
 
     *(u32*)(out_buf + i) ^= 0xFFFFFFFF;
@@ -7583,6 +7791,7 @@ skip_bitflip:
         out_buf[i] = orig + j;
 
         if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
         stage_cur++;
 
       } else stage_max--;
@@ -7595,6 +7804,7 @@ skip_bitflip:
         out_buf[i] = orig - j;
 
         if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
         stage_cur++;
 
       } else stage_max--;
@@ -7654,6 +7864,7 @@ skip_bitflip:
         *(u16*)(out_buf + i) = orig + j;
 
         if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
         stage_cur++;
 
       } else stage_max--;
@@ -7664,6 +7875,7 @@ skip_bitflip:
         *(u16*)(out_buf + i) = orig - j;
 
         if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
         stage_cur++;
 
       } else stage_max--;
@@ -7679,6 +7891,7 @@ skip_bitflip:
         *(u16*)(out_buf + i) = SWAP16(SWAP16(orig) + j);
 
         if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
         stage_cur++;
 
       } else stage_max--;
@@ -7689,6 +7902,7 @@ skip_bitflip:
         *(u16*)(out_buf + i) = SWAP16(SWAP16(orig) - j);
 
         if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
         stage_cur++;
 
       } else stage_max--;
@@ -7747,6 +7961,7 @@ skip_bitflip:
         *(u32*)(out_buf + i) = orig + j;
 
         if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
         stage_cur++;
 
       } else stage_max--;
@@ -7757,6 +7972,7 @@ skip_bitflip:
         *(u32*)(out_buf + i) = orig - j;
 
         if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
         stage_cur++;
 
       } else stage_max--;
@@ -7771,6 +7987,7 @@ skip_bitflip:
         *(u32*)(out_buf + i) = SWAP32(SWAP32(orig) + j);
 
         if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
         stage_cur++;
 
       } else stage_max--;
@@ -7781,6 +7998,7 @@ skip_bitflip:
         *(u32*)(out_buf + i) = SWAP32(SWAP32(orig) - j);
 
         if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
         stage_cur++;
 
       } else stage_max--;
@@ -7840,6 +8058,7 @@ skip_arith:
       out_buf[i] = interesting_8[j];
 
       if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+      find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
 
       out_buf[i] = orig;
       stage_cur++;
@@ -7893,6 +8112,7 @@ skip_arith:
         *(u16*)(out_buf + i) = interesting_16[j];
 
         if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
         stage_cur++;
 
       } else stage_max--;
@@ -7906,6 +8126,7 @@ skip_arith:
 
         *(u16*)(out_buf + i) = SWAP16(interesting_16[j]);
         if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
         stage_cur++;
 
       } else stage_max--;
@@ -7962,6 +8183,7 @@ skip_arith:
         *(u32*)(out_buf + i) = interesting_32[j];
 
         if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
         stage_cur++;
 
       } else stage_max--;
@@ -7975,6 +8197,7 @@ skip_arith:
 
         *(u32*)(out_buf + i) = SWAP32(interesting_32[j]);
         if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+        find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
         stage_cur++;
 
       } else stage_max--;
@@ -8041,6 +8264,7 @@ skip_interest:
       memcpy(out_buf + i, extras[j].data, last_len);
 
       if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+      find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
 
       stage_cur++;
 
@@ -8088,6 +8312,9 @@ skip_interest:
         ck_free(ex_tmp);
         goto abandon_entry;
       }
+      find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
+
+
 
       stage_cur++;
 
@@ -8141,6 +8368,7 @@ skip_user_extras:
       memcpy(out_buf + i, a_extras[j].data, last_len);
 
       if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+      find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
 
       stage_cur++;
 
@@ -8163,6 +8391,69 @@ skip_extras:
      in the .state/ directory. */
 
   if (!queue_cur->passed_det) mark_as_det_done(queue_cur);
+  
+
+  /****************
+   * KEY_BYTE *
+   ****************/
+key_bytes_stage:
+  
+  if (!queue_cur->was_exec_target)  goto havoc_stage;
+  
+  // u64 start_time_key_bytes_stage = get_cur_time();
+
+  stage_max   = (doing_det ? HAVOC_CYCLES_INIT : HAVOC_CYCLES) *
+                  perf_score / havoc_div / 100;
+  u32 start_byte,end_byte;
+  for (stage_cur = 0; stage_cur < stage_max; stage_cur++){
+    u32 find_count = 10;
+    do{
+      start_byte = M2_start_byte + UR(in_buf_size);
+      if(check_in_key_regions(queue_cur, start_byte)){
+        find_count --;
+        continue;
+      }
+      
+      key_region *tmp_key_region = queue_cur->key_regions;
+      
+      while(tmp_key_region && tmp_key_region->start_byte < start_byte)
+        tmp_key_region = tmp_key_region->next;
+            
+      if (tmp_key_region)
+        end_byte = start_byte + UR(tmp_key_region->start_byte - start_byte);
+      else
+        end_byte = start_byte + UR(M2_start_byte + in_buf_size - start_byte);
+
+       break;
+    }while(find_count > 0);
+    if (find_count == 0) continue;
+    
+    // 生成一段从start_byte到end_byte同等长度的随机数据
+    u32 len_rand = end_byte - start_byte + 1;
+    u8* rand_buf = (u8 *)ck_alloc(len_rand);
+    for(int i=0; i<len_rand; i++)
+      rand_buf[i] = (u8)UR(256);
+    
+    memcpy(out_buf + start_byte - M2_start_byte, rand_buf, len_rand);
+    ck_free(rand_buf);
+    
+    if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
+    find_key_bytes(M2_start_byte, in_buf, in_buf_size, out_buf, len);
+    memcpy(out_buf + start_byte - M2_start_byte, in_buf + start_byte - M2_start_byte, len_rand);
+    
+    
+  }
+  
+  /* 在每次变异完种子后，对种子的关键字节区间的概率乘以衰弱系数P_REDUCE */
+  key_region *tmp_key_region = queue_cur->key_regions;
+  while(tmp_key_region){
+    tmp_key_region->P *= P_REDUCE;
+    tmp_key_region = tmp_key_region->next;
+  }
+  
+  // u64 end_time_key_bytes_stage = get_cur_time();
+  // fprintf(stderr, "key_bytes_stage time is %llu sec\n", (end_time_key_bytes_stage - start_time_key_bytes_stage)/1000);
+
 
   /****************
    * RANDOM HAVOC *
@@ -8171,6 +8462,8 @@ skip_extras:
 havoc_stage:
 
   stage_cur_byte = -1;
+
+  // u64 start_time_havoc_stage = get_cur_time();
 
   /* The havoc stage mutation code is also invoked when splicing files; if the
      splice_cycle variable is set, generate different descriptions and such. */
@@ -8701,6 +8994,10 @@ havoc_stage:
     stage_finds[STAGE_SPLICE]  += new_hit_cnt - orig_hit_cnt;
     stage_cycles[STAGE_SPLICE] += stage_max;
   }
+
+  // u64 end_time_havoc_stage = get_cur_time();
+  // if (!splice_cycle)
+      // fprintf(stderr, "havoc_stage time is %llu\n", (end_time_havoc_stage - start_time_havoc_stage) / 1000);
 
 #ifndef IGNORE_FINDS
 

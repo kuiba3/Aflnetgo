@@ -14,6 +14,14 @@ typedef struct {
   unsigned int state_count;       /* Number of states stored in state_sequence. */
 } region_t;
 
+typedef struct key_region {
+	int start_byte;
+	int end_byte;
+	double P;
+	int gap_to_next;
+	struct key_region* next;
+} key_region;
+
 typedef struct {
   char *mdata; /* Buffer keeping the message data */
   int msize;   /* Message size */

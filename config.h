@@ -349,6 +349,13 @@
 #define  CTEST_CORE_TRG_MS  1000
 #define  CTEST_BUSY_CYCLES  (10 * 1000 * 1000)
 
+
+/* 设置关键区间最大保存的个数 */
+#define MAX_KEY_REGIONS_COUNT 10
+
+/* 设置抛弃概率减弱的倍数 */
+#define P_REDUCE 0.9
+
 /* Uncomment this to use inferior block-coverage-based instrumentation. Note
    that you need to recompile the target binary for this to have any effect: */
 
