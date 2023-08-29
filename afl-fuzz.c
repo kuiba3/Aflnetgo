@@ -127,6 +127,8 @@ enum {
 
 u32 cpu_start = 0;
 
+u32 protocol_now = -1;
+
 //aflnet_go#
 
 EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
@@ -1544,6 +1546,22 @@ u64 *get_path_ids(u64 *state_sequence, unsigned int state_count){
   return path_ids;
 }
 
+void cleanup_P(){
+  switch(protocol_now){
+    case 1: 
+      remove("./ACME_STORE/index.dat");
+      break;
+      
+    default:
+      break;
+      return;
+  }
+  
+  
+}
+
+
+
 // TODO: Possible optimizations
 //       - Don't block on sbr_ctr_fd, try to loop (Done)
 //       - 2x drain_pending_msgs? We need them to clean channels
@@ -1559,6 +1577,7 @@ int send_over_network_sbr() {
   // Clean up the server if needed
   if (cleanup_script)
     system(cleanup_script);
+  cleanup_P();
 
   // Clear the response buffer and reset the response buffer size
   if (response_buf) {
@@ -1833,6 +1852,7 @@ int send_over_network()
 
   //Clean up the server if needed
   if (cleanup_script) system(cleanup_script);
+  cleanup_P();
 
   //Wait a bit for the server initialization
   usleep(server_wait_usecs);
@@ -2134,6 +2154,10 @@ static u64 get_cur_time_us(void) {
    have slight bias. */
 
 static inline u32 UR(u32 limit) {
+  
+  // 使得函数更稳健
+  if (limit == 0)
+    limit = 1;
 
   if (unlikely(!rand_cnt--)) {
 
@@ -7039,7 +7063,10 @@ void insert_key_region(struct queue_entry* queue, int start, int end, double P){
   key_region *new_key_region = (key_region*) ck_alloc(sizeof(key_region));
   new_key_region->start_byte = start;
   new_key_region->end_byte = end;
-  new_key_region->P = P;
+  if (P > 0.3)
+    new_key_region->P = P;
+  else
+    new_key_region->P = 0.3;
   new_key_region->next = NULL;
   
   key_region *tmp_key_region = queue->key_regions;
@@ -8447,7 +8474,11 @@ key_bytes_stage:
   /* 在每次变异完种子后，对种子的关键字节区间的概率乘以衰弱系数P_REDUCE */
   key_region *tmp_key_region = queue_cur->key_regions;
   while(tmp_key_region){
-    tmp_key_region->P *= P_REDUCE;
+    if (tmp_key_region->P * P_REDUCE > 0.3)
+      tmp_key_region->P *= P_REDUCE;
+    else
+      tmp_key_region->P = 0.3;
+    
     tmp_key_region = tmp_key_region->next;
   }
   
@@ -10667,6 +10698,7 @@ int main(int argc, char** argv) {
         } else if (!strcmp(optarg, "DICOM")) {
           extract_requests = &extract_requests_dicom;
           extract_response_codes = &extract_response_codes_dicom;
+          protocol_now = 1;
         } else if (!strcmp(optarg, "SMTP")) {
           extract_requests = &extract_requests_smtp;
           extract_response_codes = &extract_response_codes_smtp;
