@@ -129,8 +129,10 @@ def package_content(content, result, file, root, enum_index):
     if instrument_loc > instrument_loc_start:
         print(os.path.join(root, file) + " is instrumented" + " with " + str(instrument_loc - instrument_loc_start) + " locations")
         
-        new_content = '#ifndef SFUZZ_INSTRUMENT\n#define SFUZZ_INSTRUMENT\n#ifdef __cplusplus\nextern "C" {\n#endif\n__attribute__((weak)) void __aflnet_go_instrument_call(unsigned long long enum_index, unsigned long long state_value, unsigned long long loc_flag, unsigned long long *state){*state = (*state&loc_flag)^((state_value&0xf)<<(enum_index*4));};\n__attribute__((weak)) void __aflnet_go_instrument(unsigned long long enum_index, unsigned long long state_value, unsigned long long loc_flag){};\n#ifdef __cplusplus\n}\n#endif /* __cplusplus */\n#endif /* SFUZZ_INSTRUMENT */\n' + new_content
-        out_state_BBname(file + ':7')
+        head = '#ifndef SFUZZ_INSTRUMENT\n#define SFUZZ_INSTRUMENT\n#ifdef __cplusplus\nextern "C" {\n#endif\n__attribute__((weak)) void __aflnet_go_instrument_call(unsigned long long enum_index, unsigned long long state_value, unsigned long long loc_flag, unsigned long long *state){*state = (*state&loc_flag)^((state_value&0xf)<<(enum_index*4));};\n__attribute__((weak)) void __aflnet_go_instrument(unsigned long long enum_index, unsigned long long state_value, unsigned long long loc_flag){};\n#ifdef __cplusplus\n}\n#endif /* __cplusplus */\n#endif /* SFUZZ_INSTRUMENT */\n'
+        if re.search("#ifndef SFUZZ_INSTRUMENT", new_content) is None:
+            new_content = head + new_content
+            out_state_BBname(file + ':7')
     return new_content
 
 # Step 1: get the enum definition

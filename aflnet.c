@@ -1215,7 +1215,7 @@ u64* extract_response_codes_dtls12(unsigned char* buf, unsigned int buf_size, un
         }
       }
 
-      if ((state_count+1) * sizeof(unsigned int) >= MAX_ALLOC) {
+      if ((state_count+1) * sizeof(u64) >= MAX_ALLOC) {
         *state_count_ref = state_count;
         return state_sequence;
       }
