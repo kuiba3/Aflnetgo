@@ -351,7 +351,7 @@
 
 
 /* 设置关键区间最大保存的个数 */
-#define MAX_KEY_REGIONS_COUNT 10
+#define MAX_KEY_REGIONS_COUNT 20
 
 /* 设置抛弃概率减弱的倍数 */
 #define P_REDUCE 0.9

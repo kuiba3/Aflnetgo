@@ -7145,20 +7145,29 @@ void merge_key_regions(struct queue_entry* queue){
 
 /* 判断是否在上一次testcase是否触发了目标且加入了种子队列，如果是，
    计算M2变异前后的byte改变的区间，把区间写入新加入种子队列的种子的信息表中，指针queue_top指向最后加入的种子*/
+/* 此函数只在确定性变异的时候会被调用*/
 u8 find_key_bytes(u32 M2_start_byte, u8* in_buf, u32 in_buf_size, u8* out_buf, u32 out_buf_size) {
   
     /* 种子生成的输入触发了目标，且加入队列 */
     if (was_add_queue) {
-        /* 如果是从有关键字节区间的种子变异得到的，先继承父种子的关键字节区间 */
-        if(cur_testcase_exec_target && queue_cur->was_exec_target){
+        /* 因为此函数在确定性变异时被调用，所以如果如果父种子有关键字节区间，先继承父种子的关键字节区间 */
+        /* 只有执行了目标才会有关键字节区间*/
+        if(cur_testcase_exec_target){
           key_region *tmp_key_region = queue_cur->key_regions;
           while(tmp_key_region){
             insert_key_region(queue_top, tmp_key_region->start_byte, tmp_key_region->end_byte, tmp_key_region->P * P_REDUCE);
             
             tmp_key_region = tmp_key_region->next;
           }
-          
         }
+        
+        /* 当测试用例和父种子都执行了目标，认为没有变异关键字节
+           当测试用例和父种子都没有执行了目标，认为没有变异关键字节*/
+        if(cur_testcase_exec_target && queue_cur->was_exec_target)
+          return 0;
+        else if(!cur_testcase_exec_target && !queue_cur->was_exec_target)
+          return 0;
+        
       
         u32 start = 0, end = 0;
         u8 in_finding = 0; 
@@ -7196,22 +7205,21 @@ u8 find_key_bytes(u32 M2_start_byte, u8* in_buf, u32 in_buf_size, u8* out_buf, u
           i++;
  
         }
+        
         if (cur_testcase_exec_target){
           if (start > 0)
             insert_key_region(queue_top, start+M2_start_byte, max_len-1+M2_start_byte, 1.0);
           else if(min_len < max_len)
             insert_key_region(queue_top, min_len+M2_start_byte, max_len-1+M2_start_byte, 1.0); 
-          
-          merge_key_regions(queue_top);
         }
         else{
           if (start > 0)
             insert_key_region(queue_cur, start+M2_start_byte, max_len-1+M2_start_byte, 1.0);
           else if(min_len < max_len)
             insert_key_region(queue_cur, min_len+M2_start_byte, max_len-1+M2_start_byte, 1.0); 
-          
-          merge_key_regions(queue_cur);
         }
+        
+        merge_key_regions(queue_cur);
         return 1;
     }
     
@@ -8433,7 +8441,7 @@ key_bytes_stage:
                   perf_score / havoc_div / 100;
   u32 start_byte,end_byte;
   for (stage_cur = 0; stage_cur < stage_max; stage_cur++){
-    u32 find_count = 10;
+    u32 find_count = 5;
     do{
       start_byte = M2_start_byte + UR(in_buf_size);
       if(check_in_key_regions(queue_cur, start_byte)){
