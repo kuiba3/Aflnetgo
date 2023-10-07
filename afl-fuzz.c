@@ -950,48 +950,6 @@ u64 update_scores_and_select_next_state(u8 mode) {
   state_scores = (u32 *)ck_alloc(state_ids_count * sizeof(u32));
   if (!state_scores) PFATAL("Cannot allocate memory for state_scores");
   
-  //aflnet_go
-  u64 cur_ms = get_cur_time();
-  u64 t = (cur_ms - start_time) / 1000;
-  double progress_to_tx = ((double) t) / ((double) t_x * 60.0);
-  
-  double T;
-
-  //TODO Substitute functions of exp and log with faster bitwise operations on integers
-  switch (cooling_schedule) {
-    case SAN_EXP:
-
-      T = 1.0 / pow(20.0, progress_to_tx);
-
-      break;
-
-    case SAN_LOG:
-
-      // alpha = 2 and exp(19/2) - 1 = 13358.7268297
-      T = 1.0 / (1.0 + 2.0 * log(1.0 + progress_to_tx * 13358.7268297));
-
-      break;
-
-    case SAN_LIN:
-
-      T = 1.0 / (1.0 + 19.0 * progress_to_tx);
-
-      break;
-
-    case SAN_QUAD:
-
-      T = 1.0 / (1.0 + 19.0 * pow(progress_to_tx, 2));
-
-      break;
-
-    default:
-      PFATAL ("Unkown Power Schedule for Directed Fuzzing");
-  }
-
-  double power_factor = 1.0;
-  
-  //aflnet_go#
-  
   
 
   khint_t k;
@@ -1016,29 +974,7 @@ u64 update_scores_and_select_next_state(u8 mode) {
       switch(mode) {
         case FAVOR:
       state->score = ceil(1000 * pow(2, -log10(log10(state->fuzzs + 1) * state->selected_times + 1)) * pow(2, log(state->paths_discovered + 1)));
-      //aflnet_go
-      if (state_targets){
-            
-        double normalized_ds = 0;
-        if (max_state_distance != min_state_distance)
-          normalized_ds = (state->distance_to_target_state- min_state_distance) / (max_state_distance - min_state_distance);
-        
-        //当normalized_ds>1，说明此状态不可达，修改normalized_ds为1从而给予一个较低的power_factor
-        if (normalized_ds > 1)
-          normalized_ds = 1;
-        
-        if (normalized_ds >= 0 ) {
-          double p = (1.0 - normalized_ds) * (1.0 - T) + 0.5 * T;
-          power_factor = pow(2.0, 2.0 * (double) log2(MAX_FACTOR) * (p - 0.5));
-          
-          // **************** debug *******************************//
-          fprintf(stderr, "state->id: %llu, T: %4.3lf, power_factor: %4lf\n", state->id, T, power_factor);
-          // *************** #debug *******************************//
-        }        
-      }
-      state->score = state->score * power_factor;
-      //aflnet_go#
-            
+                 
       break;
       //other cases are reserved
       }
@@ -1328,13 +1264,6 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
     }
   }
   
-  // aflnet_go
-  // Recalculate the distance when new edges are generated
-  // 加入判断条件，当有新的目标状态加入时，也要重新计算各个距离
-  if (has_new_edge && state_targets){
-    update_state_distance();
-  }
-  //aflnet_go#
 
   //Update others no matter the new seed leads to interesting state sequence or not
 
@@ -1686,8 +1615,6 @@ int send_over_network_sbr() {
           // 状态a到b的过程中执行到了目标点，那说明目标状态应该是a，运行完目标点后状态才是b，所以目标状态为state_sequence[state_count-2]
           state_targets[state_targets_count++] = state_sequence[state_count-2];
           
-          // 更新状态到目标状态的距离
-          update_state_distance();
           
           // 保存新的目标状态至state_targets.txt文件中
           u8* dir=getenv("TMP_DIR");
@@ -2008,8 +1935,6 @@ int send_over_network()
         // 状态a到b的过程中执行到了目标点，那说明目标状态应该是a，运行完目标点后状态才是b，所以目标状态为state_sequence[state_count-2]
         state_targets[state_targets_count++] = state_sequence[state_count-2];
         
-        // 更新状态到目标状态的距离
-        update_state_distance();
         
         // 保存新的目标状态至state_targets.txt文件中
         u8* dir=getenv("TMP_DIR");
@@ -10968,8 +10893,6 @@ int main(int argc, char** argv) {
       }
 
       skipped_fuzz = fuzz_one(use_argv);
-      if (!skipped_fuzz)
-        update_state_distance();
 
       if (!stop_soon && sync_id && !skipped_fuzz) {
 
