@@ -1475,18 +1475,50 @@ u64 *get_path_ids(u64 *state_sequence, unsigned int state_count){
   return path_ids;
 }
 
+void deleteFiles(const char *path) {
+    DIR *directory;
+    struct dirent *entry;
+    char filePath[256];
+    directory = opendir(path);
+    if (directory == NULL) {
+        return;
+    }
+    while ((entry = readdir(directory)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        sprintf(filePath, "%s/%s", path, entry->d_name);
+
+        if (entry->d_type == DT_DIR) {
+            deleteFiles(filePath);
+            rmdir(filePath); 
+        } else {
+            remove(filePath);
+        }
+    }
+    closedir(directory);
+}
+
 void cleanup_P(){
+  char* home = getenv("HOME");
+  char* tmppath = alloc_printf("%s/fftplog", home);
+  char* tmppath_ftpshare = alloc_printf("%s/ftpshare/", home);
+  
   switch(protocol_now){
     case 1: 
       remove("./ACME_STORE/index.dat");
       break;
+    case 2:
+      remove(tmppath);
+      deleteFiles(tmppath_ftpshare);      
+      break;
       
     default:
       break;
-      return;
+      
   }
   
-  
+  return;
 }
 
 
@@ -10622,6 +10654,7 @@ int main(int argc, char** argv) {
         } else if (!strcmp(optarg, "FTP")) {
           extract_requests = &extract_requests_ftp;
           extract_response_codes = &extract_response_codes_ftp;
+          protocol_now = 2;
         } else if (!strcmp(optarg, "DTLS12")) {
           extract_requests = &extract_requests_dtls12;
           extract_response_codes = &extract_response_codes_dtls12;
@@ -10893,6 +10926,20 @@ int main(int argc, char** argv) {
       }
 
       skipped_fuzz = fuzz_one(use_argv);
+      if (!skipped_fuzz){        
+        // 保存覆盖率
+        u8* filename = alloc_printf("%s/Coverage_rate.txt", out_dir);
+        FILE *fp = fopen(filename,"a+");
+        if(fp){
+          double t_byte_ratio;
+          u32 t_bytes;
+          t_bytes = count_non_255_bytes(virgin_bits);
+          t_byte_ratio = ((double)t_bytes * 100) / MAP_SIZE;
+          
+          fprintf(fp,"%llu:%0.02f\n", (get_cur_time()-start_time)/1000, t_byte_ratio);
+          fclose(fp);
+        }
+      }
 
       if (!stop_soon && sync_id && !skipped_fuzz) {
 
