@@ -1478,7 +1478,7 @@ u64 *get_path_ids(u64 *state_sequence, unsigned int state_count){
 void deleteFiles(const char *path) {
     DIR *directory;
     struct dirent *entry;
-    char filePath[256];
+    char filePath[400];
     directory = opendir(path);
     if (directory == NULL) {
         return;
@@ -1500,17 +1500,17 @@ void deleteFiles(const char *path) {
 }
 
 void cleanup_P(){
-  char* home = getenv("HOME");
-  char* tmppath = alloc_printf("%s/fftplog", home);
-  char* tmppath_ftpshare = alloc_printf("%s/ftpshare/", home);
+  // char* home = getenv("HOME");
+  // char* tmppath = alloc_printf("%s/fftplog", home);
+  // char* tmppath_ftpshare = alloc_printf("%s/ftpshare/", home);
   
   switch(protocol_now){
     case 1: 
       remove("./ACME_STORE/index.dat");
       break;
     case 2:
-      remove(tmppath);
-      deleteFiles(tmppath_ftpshare);      
+      remove("./fftplog");
+      deleteFiles("./ftpshare/");      
       break;
       
     default:
