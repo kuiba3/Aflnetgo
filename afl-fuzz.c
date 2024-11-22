@@ -7191,8 +7191,8 @@ u8 check_in_key_regions(struct queue_entry* queue, u32 num){
     if (tmp_key_region->start_byte <= num && tmp_key_region->end_byte >= num){
       if (UR(100) < tmp_key_region->P *100)
         return 1; 
-      else
-        return 0;      
+      // else
+        // return 0;      
     }
     tmp_key_region = tmp_key_region->next;
   }
