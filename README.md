@@ -1,7 +1,7 @@
 ## **Aflnetgo是在AFLnet、AFLGo和SnapFuzz的基础上实现的模糊测试方法，在此非常感谢它们的作者提供的开源代码。**
 
 
-# **如果需要复现实验，请移步我发布的[Aflnetgo-testcases_snap](Aflnetgo-testcases_snap)项目，里面会有更详细的脚本和测试结构。**
+# **如果需要复现实验，请移步我发布的[Aflnetgo-testcases_snap](https://github.com/kuiba3/Aflnetgo-testcases_snap)项目，里面会有更详细的脚本和测试结构。**
 其中本工具对应的**Aflnetgo-testcases_snap**中的**aflnet_go_v5**，其他的版本是用于对比实验。
 
 
@@ -116,5 +116,7 @@ make -j
 
 ## 参考的资料
 AFLNET：**[https://github.com/aflnet/aflnet](https://github.com/aflnet/aflnet)**
+
 AFLGo:**[https://github.com/aflgo/aflgo](https://github.com/aflgo/aflgo)**
+
 SnapFuzz:**[https://github.com/srg-imperial/SnapFuzz](https://github.com/srg-imperial/SnapFuzz)**
